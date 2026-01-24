@@ -11,8 +11,8 @@
 #include "rk3568.dtsi"
 
 / {
-	model = "Hlink H68K";
-	compatible = "hlink,h68k", "rockchip,rk3568";
+	model = "Hlink H68KTV";
+	compatible = "hlink,h68ktv", "rockchip,rk3568";
 
 	aliases {
 		ethernet0 = &gmac0;
