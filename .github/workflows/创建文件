@@ -1,0 +1,105 @@
+name: 创建可执行脚本
+
+on:
+  workflow_dispatch:
+    inputs:
+      script_path:
+        description: '脚本路径（如：a/b/new.sh）'
+        required: true
+        default: 'scripts/new.sh'
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        
+      - name: Create script without unnecessary gitkeep
+        id: create
+        run: |
+          # 处理路径
+          path="${{ github.event.inputs.script_path }}"
+          path="${path#/}"
+          [[ "$path" == *.sh ]] || path="${path}.sh"
+          
+          dir=$(dirname "$path")
+          file=$(basename "$path")
+          
+          echo "创建脚本: $path"
+          
+          # 1. 创建目录（如果需要）
+          if [ "$dir" != "." ] && [ ! -d "$dir" ]; then
+            mkdir -p "$dir"
+            echo "创建目录: $dir"
+          fi
+          
+          # 2. 创建脚本文件（如果不存在）
+          script_created=false
+          if [ ! -f "$path" ]; then
+            echo '#!/bin/bash' > "$path"
+            echo '' >> "$path"
+            echo '# 自动生成的脚本' >> "$path"
+            echo 'echo "新脚本文件"' >> "$path"
+            chmod +x "$path"
+            script_created=true
+            echo "创建脚本文件: $path"
+          else
+            echo "脚本文件已存在: $path"
+          fi
+          
+          # 3. 删除脚本目录中的.gitkeep（如果有的话）
+          if [ -f "$dir/.gitkeep" ]; then
+            echo "删除脚本目录中的.gitkeep（因为已有.sh文件）"
+            rm "$dir/.gitkeep"
+          fi
+          
+          # 4. 检查父目录是否需要.gitkeep
+          # 注意：这里要排除脚本所在目录，只检查父目录
+          if [ "$dir" != "." ]; then
+            IFS='/' read -ra parts <<< "$dir"
+            current=""
+            
+            # 遍历除最后一个目录外的所有父目录
+            for ((i=0; i<${#parts[@]}; i++)); do
+              if [ -z "$current" ]; then
+                current="${parts[i]}"
+              else
+                current="$current/${parts[i]}"
+              fi
+              
+              # 不检查脚本所在目录，只检查父目录
+              if [ "$current" = "$dir" ]; then
+                continue
+              fi
+              
+              echo "检查父目录: $current"
+              
+              # 检查目录是否为空（排除.gitkeep）
+              if [ -z "$(ls -A "$current" 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
+                echo "  父目录为空"
+                if [ ! -f "$current/.gitkeep" ]; then
+                  echo "  添加.gitkeep到父目录"
+                  echo "# 父目录占位" > "$current/.gitkeep"
+                fi
+              else
+                echo "  父目录非空，不需要.gitkeep"
+              fi
+            done
+          fi
+          
+          echo "path=$path" >> $GITHUB_OUTPUT
+          echo "script_created=$script_created" >> $GITHUB_OUTPUT
+          
+      - name: Commit if needed
+        run: |
+          # 检查是否有更改
+          if git status --porcelain | grep -q .; then
+            git config user.email "actions@github.com"
+            git config user.name "GitHub Actions"
+            git add .
+            git commit -m "Add script: ${{ steps.create.outputs.path }}"
+            git push
+          else
+            echo "没有更改需要提交"
+          fi
