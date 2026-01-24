@@ -1,0 +1,79 @@
+# 自动将DTS转换为ophub规范补丁，并存放到kernel-patch/beta对应内核版本目录
+name: 生成设备树补丁
+on:
+  # 触发条件：上传/修改/删除custom-dts目录下的.dts文件时自动触发
+  push:
+    paths:
+      - 'custom-dts/**/*.dts'
+  # 手动触发：Actions页面可手动运行，方便测试
+  workflow_dispatch:
+
+# 权限：允许工作流提交生成的补丁到仓库
+permissions:
+  contents: write
+
+jobs:
+  dts2patch:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 1. 拉取仓库最新代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true # 保留凭证，用于提交补丁
+
+      - name: 2. 定义核心配置（RK3568专属，无需修改）
+        run: |
+          # 内核DTS目录（RK3568固定为rockchip/，对应arch/arm64/boot/dts/rockchip/）
+          echo "KERNEL_DTS_SUBDIR=rockchip" >> $GITHUB_ENV
+          # DTS根目录/补丁输出根目录
+          echo "DTS_ROOT=custom-dts" >> $GITHUB_ENV
+          echo "PATCH_OUTPUT_ROOT=kernel-patch/beta" >> $GITHUB_ENV
+
+      - name: 3. 遍历所有DTS文件，批量生成补丁
+        run: |
+          # 遍历custom-dts下的所有.dts文件，按内核版本分类处理
+          find ${{ env.DTS_ROOT }} -name "*.dts" | while read dts_file; do
+            # 提取内核版本（如custom-dts/5.15.y/xxx.dts → 5.15.y）
+            kernel_ver=$(dirname $dts_file | awk -F '/' '{print $NF}')
+            # 提取DTS文件名（如rk3568-hlink-h68k-tv.dts）
+            dts_name=$(basename $dts_file)
+            # 补丁文件名（如rk3568-hlink-h68k-tv.dts.patch）
+            patch_name="${dts_name%.dts}.dts.patch"
+            # 定义临时目录（模拟官方空目录/修改后目录，生成纯新增补丁）
+            temp_ori="temp/original/${{ env.KERNEL_DTS_SUBDIR }}"
+            temp_mod="temp/modified/${{ env.KERNEL_DTS_SUBDIR }}"
+            # 定义补丁输出目录（kernel-patch/beta/5.15.y）
+            patch_output_dir="${{ env.PATCH_OUTPUT_ROOT }}/$kernel_ver"
+            # 创建所需目录
+            mkdir -p $temp_ori $temp_mod $patch_output_dir
+            # 复制DTS到修改后目录（原始目录保持空，生成纯新增补丁）
+            cp $dts_file $temp_mod/
+            # 核心命令：生成unified格式纯新增补丁
+            diff -Naur temp/original/ temp/modified/ > $patch_output_dir/$patch_name
+            # 清理补丁中多余的临时目录路径（关键：让补丁路径匹配ophub编译规范）
+            sed -i "s|temp/original/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $patch_output_dir/$patch_name
+            sed -i "s|temp/modified/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $patch_output_dir/$patch_name
+            # 确保补丁为UTF-8编码，避免编译乱码
+            iconv -f utf-8 -t utf-8 -c $patch_output_dir/$patch_name > $patch_output_dir/$patch_name.utf8
+            mv $patch_output_dir/$patch_name.utf8 $patch_output_dir/$patch_name
+            # 输出日志
+            echo "✅ 成功转换：$dts_file → $patch_output_dir/$patch_name"
+          done
+          # 清理临时文件
+          rm -rf temp/
+
+      - name: 4. 自动提交生成的补丁到仓库
+        run: |
+          # 配置git提交信息
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # 添加补丁文件到暂存区
+          git add ${{ env.PATCH_OUTPUT_ROOT }}/**/*.patch
+          # 提交（无新文件则跳过）
+          git commit -m "Auto generate DTS patch for ophub [$(date +%Y-%m-%d %H:%M:%S)]" || echo "ℹ 无新的DTS文件，无需提交补丁"
+          # 推送到仓库主分支（可根据你的分支修改，如main/master）
+          git push origin main || echo "ℹ 无新的补丁需要推送"
