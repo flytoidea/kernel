@@ -1,19 +1,21 @@
+# 手动触发 | 直接目录映射：custom-dts/[目录名] → kernel-patch/beta/[目录名]
+# DTS源(内核版本)下拉选择 | 内核子目录手动输入(默认rockchip)
 name: 生成设备树补丁
 on:
   workflow_dispatch:
     inputs:
-      # 下拉选择：DTS源目录（内核版本，与ophub linux-[版本].y对应）
+      # 下拉选择：DTS源目录（与ophub beta子目录名完全一致）
       dts_source_dir:
-        description: '选择DTS源目录（仓库内，内核版本）'
+        description: '选择DTS源目录（仓库内，与ophub beta子目录名一致）'
         required: true
         type: choice
         default: 'custom-dts/common-kernel-patches'
         options:
-          - custom-dts/5.10.y
-          - custom-dts/5.15.y
-          - custom-dts/6.1.y
-          - custom-dts/6.6.y
-          - custom-dts/6.12.y  
+          - custom-dts/linux-5.10.y
+          - custom-dts/linux-5.15.y
+          - custom-dts/linux-6.1.y
+          - custom-dts/linux-6.6.y
+          - custom-dts/linux-6.12.y  
           - custom-dts/common-kernel-patches
       # 手动输入：内核DTS子目录（默认rockchip，匹配unifreq dts子目录）
       kernel_dts_subdir:
@@ -35,8 +37,7 @@ jobs:
     env:
       DTS_SRC_DIR: ${{ github.event.inputs.dts_source_dir }}
       KERNEL_DTS_SUBDIR: ${{ github.event.inputs.kernel_dts_subdir }}
-      OPHUB_BETA_ROOT: 'kernel-patch/beta'  # ophub beta根目录（实时匹配）
-      UNIFREQ_DTS_ROOT: 'arch/arm64/boot/dts'  # unifreq内核DTS根路径
+      OPHUB_BETA_ROOT: 'kernel-patch/beta'  # ophub beta根目录
 
     steps:
       - name: 1. 拉取仓库最新代码
@@ -45,143 +46,159 @@ jobs:
           fetch-depth: 0  # 获取完整历史记录
           persist-credentials: true
 
-      - name: 2. 提取内核版本 & 校验目录一致性
+      - name: 2. 提取目录名并验证
         run: |
-          # 提取纯内核版本（custom-dts/5.15.y → 5.15.y）
-          KERNEL_VER=$(basename $DTS_SRC_DIR)
-          echo "KERNEL_VER=$KERNEL_VER" >> $GITHUB_ENV
-          # 定义最终补丁目录：严格匹配ophub → linux-[版本].y（实时目录名）
-          OPHUB_PATCH_DIR="${{ env.OPHUB_BETA_ROOT }}/linux-$KERNEL_VER"
+          # 提取纯目录名（custom-dts/linux-5.15.y → linux-5.15.y）
+          DIR_NAME=$(basename $DTS_SRC_DIR)
+          echo "DIR_NAME=$DIR_NAME" >> $GITHUB_ENV
+          
+          # 直接映射：DTS源目录名 = Ophub补丁目录名
+          OPHUB_PATCH_DIR="${{ env.OPHUB_BETA_ROOT }}/$DIR_NAME"
           echo "OPHUB_PATCH_DIR=$OPHUB_PATCH_DIR" >> $GITHUB_ENV
-
-          echo "✅ 匹配ophub beta实时目录：$OPHUB_PATCH_DIR"
-          echo "✅ 匹配unifreq内核路径：$UNIFREQ_DTS_ROOT/$KERNEL_DTS_SUBDIR"
-
+          
+          echo "📁 目录映射规则："
+          echo "  DTS源目录：$DTS_SRC_DIR"
+          echo "  → 补丁目录：$OPHUB_PATCH_DIR"
+          
           # 校验DTS源目录有效性
           if [ ! -d "$DTS_SRC_DIR" ]; then
-            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 不存在，请先创建并上传DTS"
+            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 不存在"
+            echo "  请先创建目录并上传.dts文件"
             exit 1
           fi
-          DTS_COUNT=$(find $DTS_SRC_DIR -name "*.dts" -o -name "*.dtsi" | wc -l)
-          if [ $DTS_COUNT -eq 0 ]; then
+          
+          # 检查是否有.dts或.dtsi文件
+          if ! find "$DTS_SRC_DIR" -name "*.dts" -o -name "*.dtsi" | grep -q .; then
             echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 下无.dts或.dtsi文件"
+            echo "  请在目录中添加设备树文件"
             exit 1
           fi
-          echo "✅ 检测到有效DTS文件：$DTS_COUNT 个"
+          
+          DTS_COUNT=$(find "$DTS_SRC_DIR" \( -name "*.dts" -o -name "*.dtsi" \) | wc -l)
+          echo "✅ 检测到 $DTS_COUNT 个DTS文件"
 
-      - name: 3. 生成【目录一致+路径匹配】的纯新增补丁
+      - name: 3. 生成补丁文件
         run: |
-          # 创建ophub规范目录（linux-[版本].y），确保与实时目录一致
-          mkdir -p ${{ env.OPHUB_PATCH_DIR }}
-          echo "✅ 补丁输出目录（与ophub实时一致）：${{ env.OPHUB_PATCH_DIR }}"
-
-          # 获取DTS源目录路径
+          # 创建输出目录
+          mkdir -p "${{ env.OPHUB_PATCH_DIR }}"
+          
+          # 获取变量
           DTS_SRC_DIR="${{ env.DTS_SRC_DIR }}"
-          KERNEL_VER="${{ env.KERNEL_VER }}"
+          OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
           KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
-          UNIFREQ_DTS_ROOT="${{ env.UNIFREQ_DTS_ROOT }}"
           
-          echo "🔍 扫描DTS文件，内核子目录：$KERNEL_DTS_SUBDIR"
+          echo "🔨 开始生成补丁..."
+          echo "  源目录：$DTS_SRC_DIR"
+          echo "  目标目录：$OPHUB_PATCH_DIR"
+          echo "  内核子目录：$KERNEL_DTS_SUBDIR"
           
-          # 处理所有.dts和.dtsi文件
+          # 计数器
+          SUCCESS_COUNT=0
+          ERROR_COUNT=0
+          
+          # 处理每个DTS文件
           find "$DTS_SRC_DIR" -type f \( -name "*.dts" -o -name "*.dtsi" \) | while read -r dts_file; do
             filename=$(basename "$dts_file")
+            patch_name="${filename}.patch"
+            patch_path="$OPHUB_PATCH_DIR/$patch_name"
             
-            # 生成补丁文件路径（在ophub目录中）
-            patch_filename="${filename}.patch"
-            patch_path="${{ env.OPHUB_PATCH_DIR }}/$patch_filename"
-            
-            # 计算DTS文件的总行数
+            # 计算行数
             line_count=$(wc -l < "$dts_file")
             
-            # 使用动态路径生成补丁
-            # 注意：这里使用用户输入的 $KERNEL_DTS_SUBDIR，而不是写死的rockchip
-            echo "--- /dev/null" > "$patch_path"
-            echo "+++ b/$UNIFREQ_DTS_ROOT/$KERNEL_DTS_SUBDIR/$filename" >> "$patch_path"
+            # 生成补丁
+            {
+              echo "--- /dev/null"
+              echo "+++ b/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/$filename"
+              echo "@@ -0,0 +1,$line_count @@"
+              # 添加DTS内容，每行前加+
+              sed 's/^/+/' "$dts_file"
+            } > "$patch_path"
             
-            # 生成正确的补丁块头
-            echo "@@ -0,0 +1,$line_count @@@" >> "$patch_path"
-            
-            # 读取DTS文件内容，添加到补丁中（每行前加+）
-            while IFS= read -r line; do
-              echo "+$line" >> "$patch_path"
-            done < "$dts_file"
-            
-            echo "✅ 生成补丁：$patch_filename"
-            echo "  路径：$UNIFREQ_DTS_ROOT/$KERNEL_DTS_SUBDIR/$filename"
-            echo "  行数：$line_count"
+            # 验证补丁是否成功生成
+            if [ -s "$patch_path" ]; then
+              echo "  ✅ $(basename "$patch_path") (${line_count}行)"
+              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            else
+              echo "  ❌ $(basename "$patch_path") (生成失败)"
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+            fi
           done
           
-          echo -e "\n🎉 补丁生成完成！目录100%匹配ophub beta实时状态"
-          
-          # 显示生成的补丁列表
-          echo "📁 生成的补丁列表："
-          find "${{ env.OPHUB_PATCH_DIR }}" -name "*.patch" 2>/dev/null | while read patch; do
-            echo "  - $(basename "$patch")"
-          done || echo "  暂无补丁文件"
-
-      - name: 4. 验证补丁格式和路径
-        run: |
-          PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
-          KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
-          UNIFREQ_DTS_ROOT="${{ env.UNIFREQ_DTS_ROOT }}"
-          
-          if [ -d "$PATCH_DIR" ]; then
-            PATCH_COUNT=$(find "$PATCH_DIR" -name "*.patch" | wc -l)
-            echo "🔍 验证补丁格式和路径..."
-            
-            if [ $PATCH_COUNT -eq 0 ]; then
-              echo "❌ 错误：未生成任何补丁文件"
-              exit 1
-            fi
-            
-            echo "✅ 找到 $PATCH_COUNT 个补丁文件"
-            echo "✅ 内核子目录配置：$KERNEL_DTS_SUBDIR"
-            echo "✅ 内核根路径：$UNIFREQ_DTS_ROOT"
-            
-            # 检查每个补丁的路径是否正确
-            find "$PATCH_DIR" -name "*.patch" | while read patch_file; do
-              patch_name=$(basename "$patch_file")
-              echo "检查: $patch_name"
-              
-              # 检查文件是否为空
-              if [ ! -s "$patch_file" ]; then
-                echo "  ❌ 错误：补丁文件为空"
-                exit 1
-              fi
-              
-              # 检查补丁头格式和路径
-              expected_path="b/$UNIFREQ_DTS_ROOT/$KERNEL_DTS_SUBDIR/"
-              if grep -q "+++ $expected_path" "$patch_file"; then
-                actual_path=$(grep -m1 "^+++ " "$patch_file")
-                echo "  ✅ 路径正确：$actual_path"
-              else
-                echo "  ❌ 错误：补丁路径不匹配预期"
-                echo "    预期包含：$expected_path"
-                echo "    实际内容："
-                head -n 3 "$patch_file"
-                exit 1
-              fi
-            done
-          else
-            echo "❌ 错误：补丁目录不存在"
+          echo ""
+          echo "📊 生成结果："
+          echo "  ✅ 成功：$SUCCESS_COUNT 个"
+          if [ $ERROR_COUNT -gt 0 ]; then
+            echo "  ❌ 失败：$ERROR_COUNT 个"
             exit 1
           fi
 
-      - name: 5. 自动提交补丁到ophub规范目录
+      - name: 4. 验证生成结果
+        run: |
+          OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
+          KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
+          
+          echo "🔍 验证补丁文件..."
+          
+          # 检查目录是否存在
+          if [ ! -d "$OPHUB_PATCH_DIR" ]; then
+            echo "❌ 错误：补丁目录 $OPHUB_PATCH_DIR 不存在"
+            exit 1
+          fi
+          
+          # 统计补丁文件
+          PATCH_FILES=($(find "$OPHUB_PATCH_DIR" -name "*.patch"))
+          PATCH_COUNT=${#PATCH_FILES[@]}
+          
+          if [ $PATCH_COUNT -eq 0 ]; then
+            echo "⚠️  警告：未生成任何补丁文件"
+          else
+            echo "✅ 找到 $PATCH_COUNT 个补丁文件"
+            
+            # 随机检查几个文件的格式
+            echo "📝 随机检查文件格式..."
+            for patch_file in "${PATCH_FILES[@]:0:3}"; do
+              echo "  📄 $(basename "$patch_file")"
+              
+              # 检查文件头
+              if head -n 1 "$patch_file" | grep -q "^--- /dev/null"; then
+                echo "    ✅ 补丁头正确"
+              else
+                echo "    ❌ 补丁头错误"
+              fi
+              
+              # 检查路径是否正确包含内核子目录
+              if head -n 2 "$patch_file" | tail -n 1 | grep -q "b/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/"; then
+                echo "    ✅ 内核路径正确"
+              else
+                echo "    ❌ 内核路径错误"
+              fi
+            done
+          fi
+          
+          echo ""
+          echo "🎯 补丁存放位置：$OPHUB_PATCH_DIR"
+
+      - name: 5. 提交补丁到仓库
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 添加所有新生成的补丁文件
-          git add "${{ env.OPHUB_PATCH_DIR }}"/*.patch 2>/dev/null || echo "无新补丁可添加"
+          # 添加补丁文件
+          git add "${{ env.OPHUB_PATCH_DIR }}"/
           
           # 检查是否有更改
           if git diff --cached --quiet; then
-            echo "ℹ 无新补丁，无需提交"
+            echo "ℹ️  无新补丁文件，无需提交"
           else
-            COMMIT_MSG="DTS2Patch[Ophub Live]: linux-${{ env.KERNEL_VER }} | 内核子目录：${{ env.KERNEL_DTS_SUBDIR }} | 目录：${{ env.OPHUB_PATCH_DIR }}"
+            # 显示将要提交的文件
+            echo "📋 将要提交的文件："
+            git diff --cached --name-only
+            
+            # 提交
+            COMMIT_MSG="DTS2Patch: ${{ env.DIR_NAME }} | 内核子目录：${{ env.KERNEL_DTS_SUBDIR }}"
             git commit -m "$COMMIT_MSG"
+            
+            # 推送到仓库
             git push origin main
-            echo "✅ 补丁已提交并推送"
+            echo "✅ 补丁已提交并推送到仓库"
           fi
