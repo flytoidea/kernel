@@ -21,7 +21,7 @@ on:
         default: 'rockchip'
         type: string
       patch_number:
-        description: '补丁编号（DTS补丁用300系列）'
+        description: '补丁编号（DTS补丁用300系列，3位数字）'
         required: true
         default: '301'
         type: string
@@ -45,34 +45,51 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: 2. 安装Python依赖
+      - name: 2. 安装依赖（requests+DTS语法检查工具）
         run: |
-          python3 -m pip install requests
+          python3 -m pip install requests --upgrade
+          sudo apt-get update && sudo apt-get install -y device-tree-compiler && echo "✅ DTC语法检查工具安装完成"
 
-      - name: 3. 准备环境
+      - name: 3. 准备环境&初始化目录
         run: |
-          # 提取目录名
-          DIR_NAME=$(basename $DTS_SRC_DIR)
-          echo "DIR_NAME=$DIR_NAME" >> $GITHUB_ENV
+          # 提取目录名并构建绝对路径
+          DIR_NAME=$(basename "${DTS_SRC_DIR}")
+          DTS_SRC_DIR_ABS="${GITHUB_WORKSPACE}/${DTS_SRC_DIR}"
+          OPHUB_PATCH_DIR="${GITHUB_WORKSPACE}/${OPHUB_BETA_ROOT}/${DIR_NAME}"
           
-          # 设置补丁输出目录
-          OPHUB_PATCH_DIR="${{ env.OPHUB_BETA_ROOT }}/$DIR_NAME"
-          echo "OPHUB_PATCH_DIR=$OPHUB_PATCH_DIR" >> $GITHUB_ENV
+          # 写入全局环境变量
+          echo "DIR_NAME=${DIR_NAME}" >> $GITHUB_ENV
+          echo "DTS_SRC_DIR_ABS=${DTS_SRC_DIR_ABS}" >> $GITHUB_ENV
+          echo "OPHUB_PATCH_DIR=${OPHUB_PATCH_DIR}" >> $GITHUB_ENV
           
-          # 创建目录
+          # 递归创建目录
           mkdir -p "$OPHUB_PATCH_DIR"
           
-          echo "📁 环境信息："
-          echo "  DTS源目录：$DTS_SRC_DIR"
-          echo "  补丁目录：$OPHUB_PATCH_DIR"
-          echo "  内核子目录：$KERNEL_DTS_SUBDIR"
-          echo "  补丁编号：$PATCH_NUMBER"
-
-      - name: 4. 使用Python脚本智能生成补丁
-        run: |
-          cd "${{ github.workspace }}"
+          # DTS文件语法预检查（非致命，仅提示）
+          echo -e "\n🔍 开始检查DTS文件语法..."
+          DTS_ERROR_COUNT=0
+          find "${DTS_SRC_DIR_ABS}" -name "*.dts" -not -name ".*" | while read dts; do
+            if dtc -I dts -O dtb -o /dev/null "$dts" 2>/dev/null; then
+              echo "  ✅ $(basename $dts) 语法正常"
+            else
+              echo "  ⚠️ $(basename $dts) 语法可能存在错误（继续处理）"
+              DTS_ERROR_COUNT=$((DTS_ERROR_COUNT+1))
+            fi
+          done
           
-          # 创建Python脚本，使用不同的定界符避免嵌套引号问题
+          # 环境信息汇总
+          echo -e "\n📁 环境信息汇总："
+          echo "  DTS源目录（绝对路径）：${DTS_SRC_DIR_ABS}"
+          echo "  补丁输出目录：${OPHUB_PATCH_DIR}"
+          echo "  内核子目录：${KERNEL_DTS_SUBDIR}"
+          echo "  基础补丁编号：${PATCH_NUMBER}"
+          echo "  DTS语法警告数：${DTS_ERROR_COUNT}"
+
+      - name: 4. 智能生成DTS补丁（核心逻辑）
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          
+          # 创建Python核心脚本
           cat > generate_intelligent_patch.py << 'PYTHON_EOF'
 #!/usr/bin/env python3
 import os
@@ -83,328 +100,370 @@ from datetime import datetime, timezone
 
 def get_unifreq_makefile_url(kernel_version, dts_subdir):
     """根据内核版本和子目录构造Makefile URL"""
-    # 从内核版本目录名提取版本号（如linux-6.1.y -> 6.1.y）
     version = kernel_version.replace('linux-', '')
-    
-    # 构建仓库名
     repo_name = f"linux-{version}-{dts_subdir}"
-    
-    # 构建URL
     url = f"https://raw.githubusercontent.com/unifreq/{repo_name}/main/arch/arm64/boot/dts/{dts_subdir}/Makefile"
     return url
 
 def find_insert_position(makefile_content, new_dtb_name):
-    """在Makefile中找到合适的插入位置"""
+    """在Makefile中找到合适的插入位置（按系列+字母序）"""
     lines = makefile_content.splitlines()
-    
-    # 提取设备系列（如rk3568-hlink-h68ktv -> rk3568）
-    device_series = new_dtb_name.split('-')[0] + '-'
-    
-    # 找出所有相关条目的行号
+    # 精确提取设备系列，避免部分匹配
+    device_series_parts = new_dtb_name.split('-')
+    device_series = f"{device_series_parts[0]}-" if len(device_series_parts) > 1 else ""
     relevant_lines = []
+    
     for i, line in enumerate(lines):
-        if "dtb-\$(CONFIG_ARCH_" in line and device_series in line:
-            # 提取当前行的dtb名称
+        if "dtb-\$(CONFIG_ARCH_" in line and line.find(device_series) != -1:
             match = re.search(r'\+= (\S+)\.dtb', line)
             if match:
                 current_dtb = match.group(1)
                 relevant_lines.append((i, current_dtb))
     
     if not relevant_lines:
-        # 如果没有找到同系列设备，找到第一个dtb行插入
+        # 无同系列，找第一个dtb行插入
         for i, line in enumerate(lines):
             if "dtb-\$(CONFIG_ARCH_" in line:
                 print(f"  📍 未找到同系列设备，将在第{i+1}行后插入")
                 return i + 1
-        # 如果也没有dtb行，插入到文件末尾
+        # 无任何dtb行，插入到末尾
         print(f"  📍 未找到任何dtb行，将插入到文件末尾")
         return len(lines)
     
-    # 按字母顺序排序现有的dtb名称
+    # 按字母顺序排序现有设备
     relevant_lines.sort(key=lambda x: x[1])
-    
-    # 找到新dtb应该插入的位置
+    # 找到新设备的插入位置
     for i, (line_num, current_dtb) in enumerate(relevant_lines):
         if new_dtb_name < current_dtb:
-            print(f"  📍 按字母顺序插入在第{line_num+1}行前（在{current_dtb}之前）")
+            print(f"  📍 按字母序插入在{current_dtb}前（第{line_num+1}行）")
             return line_num
         elif i == len(relevant_lines) - 1:
-            # 如果新dtb比所有现有的大，插入在最后一个之后
-            print(f"  📍 插入在第{line_num+1}行后（在{current_dtb}之后）")
+            print(f"  📍 按字母序插入在{current_dtb}后（第{line_num+1}行）")
             return line_num + 1
     
-    # 默认插入到第一个相关行之后
     return relevant_lines[0][0] + 1
 
 def get_config_prefix(dts_subdir):
-    """根据子目录获取CONFIG_ARCH_前缀"""
+    """根据子目录获取CONFIG_ARCH_前缀（适配主流厂商）"""
     config_map = {
         'rockchip': 'ROCKCHIP',
         'amlogic': 'MESON',
         'sunxi': 'SUNXI',
         'allwinner': 'SUNXI',
         'mediatek': 'MEDIATEK',
+        'nvidia': 'TEGRA',
+        'broadcom': 'BCM',
+        'qcom': 'QCOM',
+        'exynos': 'EXYNOS'
     }
     return config_map.get(dts_subdir.lower(), dts_subdir.upper())
 
 def create_patch_file(dts_file_path, dts_subdir, patch_number, output_dir):
-    """生成完整的补丁文件"""
-    # 读取DTS文件
-    with open(dts_file_path, 'r', encoding='utf-8') as f:
-        dts_content = f.read()
+    """生成完整补丁文件（含防重复+全容错）"""
+    # 读取DTS文件（容错编码+空白）
+    try:
+        with open(dts_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            dts_content = f.read().strip()
+        if not dts_content:
+            print(f"  ❌ DTS文件无有效内容：{os.path.basename(dts_file_path)}")
+            return None
+    except Exception as e:
+        print(f"  ❌ 读取DTS文件失败：{e}")
+        return None
     
+    # 处理文件名（过滤特殊字符，符合ophub规范）
     dts_filename = os.path.basename(dts_file_path)
     dts_basename = os.path.splitext(dts_filename)[0]
+    dts_basename_clean = re.sub(r'[^a-zA-Z0-9-]', '-', dts_basename)
     dtb_name = f"{dts_basename}.dtb"
+    patch_filename = f"{patch_number}-dts-add-{dts_subdir}-{dts_basename_clean}-dtb.patch"
+    patch_path = os.path.join(output_dir, patch_filename)
+    
+    # 防重复：补丁已存在则跳过
+    if os.path.exists(patch_path):
+        print(f"  ⚠️  补丁已存在，跳过：{patch_filename}")
+        return None
     
     print(f"🔄 处理DTS文件: {dts_filename}")
-    
-    # 获取内核版本
     kernel_version = os.environ.get('DIR_NAME', 'linux-6.1.y')
-    
-    # 下载Makefile
     makefile_url = get_unifreq_makefile_url(kernel_version, dts_subdir)
-    print(f"  📥 下载Makefile: {makefile_url}")
-    
-    try:
-        response = requests.get(makefile_url, timeout=10)
-        response.raise_for_status()
-        makefile_content = response.text
-    except Exception as e:
-        print(f"  ❌ 下载Makefile失败: {e}")
-        print(f"  ℹ️ 使用模拟Makefile")
-        # 创建一个简单的Makefile模板
-        makefile_content = f"# Makefile for {dts_subdir}\n# Auto-generated when real Makefile not available\n"
-    
-    # 找到插入位置
-    insert_line = find_insert_position(makefile_content, dts_basename)
-    
-    # 分割Makefile行
-    makefile_lines = makefile_content.splitlines()
-    
-    # 创建修改后的Makefile
-    new_makefile_lines = makefile_lines.copy()
     config_prefix = get_config_prefix(dts_subdir)
     new_line = f"dtb-$(CONFIG_ARCH_{config_prefix}) += {dtb_name}"
-    new_makefile_lines.insert(insert_line, new_line)
     
-    # 计算行数
-    dts_line_count = len(dts_content.splitlines())
+    # 下载Makefile（超时+重定向容错）
+    try:
+        response = requests.get(makefile_url, timeout=10, allow_redirects=True)
+        response.raise_for_status()
+        makefile_content = response.text
+        print(f"  ✅ 成功下载Unifreq Makefile")
+    except Exception as e:
+        print(f"  ⚠️  下载Makefile失败: {e}")
+        print(f"  ℹ️  使用模拟Makefile模板")
+        makefile_content = f"# Makefile for {dts_subdir}\n# Auto-generated template\ndtb-$(CONFIG_ARCH_{config_prefix}) += example.dtb\n"
+    
+    # 计算插入位置+处理内容
+    insert_line = find_insert_position(makefile_content, dts_basename)
+    makefile_lines = makefile_content.splitlines()
+    dts_lines = dts_content.splitlines()
+    dts_line_count = len(dts_lines)
     total_insertions = dts_line_count + 1
-    
-    # 生成补丁内容
-    patch_lines = []
-    
-    # Git补丁头
     now = datetime.now(timezone.utc)
     commit_hash = format(int(now.timestamp()), 'x')
     
+    # 生成补丁内容（严格遵循Linux/ophub补丁规范）
+    patch_lines = []
+    # 补丁头（符合Git am规范）
     patch_lines.extend([
         f"From {commit_hash} Mon Sep 17 00:00:00 2001",
         f"From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>",
         f"Date: {now.strftime('%a, %d %b %Y %H:%M:%S +0000')}",
-        f"Subject: [PATCH] Add {dts_basename}",
+        f"Subject: [PATCH] Add {dts_basename_clean} dtb support for {dts_subdir}",
         "",
         "---",
         f" arch/arm64/boot/dts/{dts_subdir}/Makefile         |   1 +",
-        f" arch/arm64/boot/dts/{dts_subdir}/{dts_filename}  |   {dts_line_count} +",
+        f" arch/arm64/boot/dts/{dts_subdir}/{dts_filename}  | {dts_line_count} +",
         f" 2 files changed, {total_insertions} insertions(+)",
         f" create mode 100644 arch/arm64/boot/dts/{dts_subdir}/{dts_filename}",
         "",
+    ])
+    
+    # Makefile Diff（12位index+正确插入位置+3行上下文）
+    patch_lines.extend([
         f"diff --git a/arch/arm64/boot/dts/{dts_subdir}/Makefile b/arch/arm64/boot/dts/{dts_subdir}/Makefile",
-        f"index 0000000..1111111 100644",
+        f"index 000000000000..111111111111 100644",
         f"--- a/arch/arm64/boot/dts/{dts_subdir}/Makefile",
         f"+++ b/arch/arm64/boot/dts/{dts_subdir}/Makefile",
     ])
-    
-    # 生成Makefile的diff
-    # 找到上下文行
+    # 计算上下文范围
     context_start = max(0, insert_line - 3)
     context_end = min(len(makefile_lines), insert_line + 2)
+    old_context_lines = makefile_lines[context_start:context_end]
+    old_line_count = len(old_context_lines)
+    insert_in_context = insert_line - context_start
+    # 生成上下文diff
+    patch_lines.append(f"@@ -{context_start + 1},{old_line_count} +{context_start + 1},{old_line_count + 1} @@")
+    # 正确插入新行到指定位置
+    for i, line in enumerate(old_context_lines):
+        if i == insert_in_context:
+            patch_lines.append(f"+{new_line}")
+        patch_lines.append(f" {line}")
+    # 插入位置在上下文末尾的情况
+    if insert_in_context == len(old_context_lines):
+        patch_lines.append(f"+{new_line}")
     
-    # 计算diff的行范围
-    old_start = context_start + 1
-    old_count = context_end - context_start
-    new_start = old_start
-    new_count = old_count + 1  # 因为我们插入了一行
-    
-    patch_lines.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
-    
-    # 添加上下文
-    for i in range(context_start, insert_line):
-        if i < len(makefile_lines):
-            patch_lines.append(f" {makefile_lines[i]}")
-    
-    # 添加新行
-    patch_lines.append(f"+{new_line}")
-    
-    # 添加后续上下文
-    for i in range(insert_line, min(len(makefile_lines), context_end)):
-        patch_lines.append(f" {makefile_lines[i]}")
-    
-    # 添加DTS文件的diff
+    # DTS文件Diff（新文件创建）
     patch_lines.extend([
         "",
         f"diff --git a/arch/arm64/boot/dts/{dts_subdir}/{dts_filename} b/arch/arm64/boot/dts/{dts_subdir}/{dts_filename}",
         "new file mode 100644",
-        "index 0000000..1111111",
+        f"index 000000000000..111111111111",
         "--- /dev/null",
         f"+++ b/arch/arm64/boot/dts/{dts_subdir}/{dts_filename}",
         f"@@ -0,0 +1,{dts_line_count} @@",
     ])
-    
     # 添加DTS内容（每行前加+）
-    for line in dts_content.splitlines():
+    for line in dts_lines:
         patch_lines.append(f"+{line}")
     
-    # 生成补丁文件名
-    patch_filename = f"{patch_number}-dts-add-{dts_subdir}-{dts_basename}-dtb.patch"
-    patch_path = os.path.join(output_dir, patch_filename)
-    
     # 写入补丁文件
-    with open(patch_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(patch_lines))
-    
-    print(f"  ✅ 生成补丁: {patch_filename}")
-    print(f"  📍 插入位置: 第{insert_line+1}行")
-    print(f"  📝 添加的条目: {new_line}")
-    
-    return patch_path
+    try:
+        with open(patch_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(patch_lines))
+        print(f"  ✅ 生成补丁: {patch_filename}")
+        print(f"  📍 插入位置: Makefile第{insert_line+1}行")
+        print(f"  📝 Makefile条目: {new_line}")
+        return patch_path
+    except Exception as e:
+        print(f"  ❌ 写入补丁文件失败: {e}")
+        return None
 
 def main():
-    # 获取环境变量
-    dts_src_dir = os.environ.get('DTS_SRC_DIR', '')
+    """主函数：批量处理DTS文件+生成补丁"""
+    # 获取全局环境变量
+    dts_src_dir = os.environ.get('DTS_SRC_DIR_ABS', '')
     dts_subdir = os.environ.get('KERNEL_DTS_SUBDIR', 'rockchip')
     patch_number_str = os.environ.get('PATCH_NUMBER', '301')
     output_dir = os.environ.get('OPHUB_PATCH_DIR', '')
     
-    if not dts_src_dir or not output_dir:
-        print("❌ 缺少必要环境变量")
-        print(f"DTS_SRC_DIR: {dts_src_dir}")
-        print(f"OPHUB_PATCH_DIR: {output_dir}")
+    # 基础参数校验
+    if not all([dts_src_dir, output_dir, os.path.isdir(dts_src_dir), os.path.isdir(output_dir)]):
+        print("❌ 缺少必要环境变量或目录不存在")
         sys.exit(1)
     
-    # 将补丁编号转为整数
+    # 处理补丁编号（3位数字+300-399区间建议）
     try:
         base_patch_number = int(patch_number_str)
+        if base_patch_number < 300 or base_patch_number > 399:
+            print(f"⚠️  补丁编号建议在300-399区间，当前为{base_patch_number}")
     except ValueError:
-        print(f"❌ 补丁编号必须为数字: {patch_number_str}")
+        print(f"❌ 补丁编号必须为数字，自动使用默认值301")
         base_patch_number = 301
     
-    # 查找所有DTS文件
+    # 查找DTS文件（仅一级目录+排除隐藏文件+仅.dts后缀）
     dts_files = []
-    for root, dirs, files in os.walk(dts_src_dir):
-        for file in files:
-            if file.endswith('.dts'):
-                dts_files.append(os.path.join(root, file))
-    
-    if not dts_files:
-        print("❌ 未找到DTS文件")
+    try:
+        for file in sorted(os.listdir(dts_src_dir)):
+            file_path = os.path.join(dts_src_dir, file)
+            if os.path.isfile(file_path) and file.lower().endswith('.dts') and not file.startswith('.'):
+                dts_files.append(file_path)
+    except Exception as e:
+        print(f"❌ 读取DTS目录失败: {e}")
         sys.exit(1)
     
-    print(f"📁 找到 {len(dts_files)} 个DTS文件")
+    if not dts_files:
+        print("❌ 未在指定目录找到有效DTS文件（排除隐藏/子目录文件）")
+        sys.exit(1)
     
-    # 为每个DTS文件生成补丁
-    for i, dts_file in enumerate(sorted(dts_files)):
-        # 递增编号
-        current_patch_num = str(base_patch_number + i)
-        
-        patch_path = create_patch_file(
-            dts_file, 
-            dts_subdir, 
-            current_patch_num,
-            output_dir
-        )
-        
-        print(f"✅ 第{i+1}个补丁已生成: {os.path.basename(patch_path)}")
+    # 批量生成补丁
+    print(f"\n🚀 开始批量处理 {len(dts_files)} 个DTS文件")
+    success_count = 0
+    fail_count = 0
+    for i, dts_file in enumerate(dts_files):
+        current_patch_num = f"{base_patch_number + i:03d}"  # 3位补零
+        print(f"\n[{i+1}/{len(dts_files)}] 处理: {os.path.basename(dts_file)}")
+        patch_path = create_patch_file(dts_file, dts_subdir, current_patch_num, output_dir)
+        if patch_path and os.path.exists(patch_path):
+            success_count += 1
+        else:
+            fail_count += 1
     
-    print(f"🎉 所有补丁生成完成，共{len(dts_files)}个")
+    # 生成结果汇总
+    print(f"\n🎉 补丁生成完成 | 成功: {success_count} | 失败: {fail_count} | 总计: {len(dts_files)}")
+    if success_count == 0:
+        print("❌ 无补丁文件生成，流程终止")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
 PYTHON_EOF
           
-          # 运行Python脚本
+          # 赋予执行权限并运行脚本
+          chmod +x generate_intelligent_patch.py
           python3 generate_intelligent_patch.py
           
-          echo "🎉 Python脚本执行完成"
+          # 清理临时脚本
+          rm -f generate_intelligent_patch.py
+          echo -e "\n🎉 补丁生成脚本执行完成，临时文件已清理"
 
-      - name: 5. 验证生成的补丁
+      - name: 5. 验证补丁+生成汇总日志
         run: |
           OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
+          DIR_NAME="${{ env.DIR_NAME }}"
+          KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
           
-          echo "🔍 验证补丁文件..."
+          echo -e "\n🔍 开始验证生成的补丁文件"
+          # 查找补丁文件（排除隐藏文件）
+          shopt -s nullglob
+          PATCH_FILES=($(find "${OPHUB_PATCH_DIR}" -name "*.patch" -not -name ".*"))
+          shopt -u nullglob
+          PATCH_COUNT=${#PATCH_FILES[@]}
           
-          if [ ! -d "$OPHUB_PATCH_DIR" ]; then
-            echo "❌ 补丁目录不存在"
+          if [ "${PATCH_COUNT}" -eq 0 ]; then
+            echo "❌ 未生成任何有效补丁文件"
             exit 1
           fi
           
-          # 检查是否有补丁文件生成
-          PATCH_COUNT=$(find "$OPHUB_PATCH_DIR" -name "*.patch" 2>/dev/null | wc -l)
-          
-          if [ "$PATCH_COUNT" -eq 0 ]; then
-            echo "❌ 未生成任何补丁文件"
-            exit 1
-          fi
-          
-          echo "📄 生成的补丁列表（共 $PATCH_COUNT 个）："
-          find "$OPHUB_PATCH_DIR" -name "*.patch" | while read patch; do
+          # 逐个验证补丁规范
+          echo -e "\n📄 生成的补丁列表（共 ${PATCH_COUNT} 个）："
+          for patch in "${PATCH_FILES[@]}"; do
             patch_name=$(basename "$patch")
-            echo "  📝 $patch_name"
-            
-            # 检查补丁头
-            if head -n 1 "$patch" | grep -q "^From "; then
-              echo "    ✅ 包含git补丁头"
+            echo -e "  📝 ${patch_name}"
+            # 验证Git补丁头
+            if head -n 1 "$patch" | grep -q "^From [0-9a-f]\+ Mon Sep 17 00:00:00 2001$"; then
+              echo -e "    ✅ 合法Git补丁头"
             else
-              echo "    ❌ 缺少git补丁头"
+              echo -e "    ❌ 补丁头格式错误"
             fi
-            
-            # 检查是否包含Makefile修改
-            if grep -q "Makefile" "$patch"; then
-              echo "    ✅ 包含Makefile修改"
-              # 显示添加的行
-              added_line=$(grep "^+dtb-" "$patch" | head -1)
-              if [ -n "$added_line" ]; then
-                echo "    📋 添加的条目: ${added_line:1}"
-              fi
+            # 验证12位index哈希
+            if grep -q "index 000000000000..111111111111" "$patch"; then
+              echo -e "    ✅ 12位规范Index哈希"
             else
-              echo "    ❌ 缺少Makefile修改"
+              echo -e "    ❌ Index哈希位数不规范（需12位）"
             fi
-            
-            # 检查是否包含DTS文件
-            if grep -q "\.dts" "$patch"; then
-              echo "    ✅ 包含DTS文件"
+            # 验证Makefile条目
+            added_line=$(grep "^+dtb-\$(CONFIG_ARCH_" "$patch" | head -1 | sed 's/^+//')
+            if [ -n "$added_line" ]; then
+              echo -e "    ✅ Makefile条目: ${added_line}"
             else
-              echo "    ❌ 缺少DTS文件"
+              echo -e "    ❌ 缺少Makefile修改条目"
             fi
-            
-            # 显示文件大小
-            file_size=$(wc -l < "$patch")
-            echo "    📏 补丁行数: $file_size"
+            # 验证DTS文件创建
+            if grep -q "create mode 100644.*\.dts" "$patch"; then
+              echo -e "    ✅ 包含DTS文件创建信息"
+            else
+              echo -e "    ❌ 缺少DTS文件创建信息"
+            fi
+            # 补丁大小
+            file_lines=$(wc -l < "$patch")
+            file_size=$(du -h "$patch" | awk '{print $1}')
+            echo -e "    📏 大小: ${file_size} / 行数: ${file_lines}"
+            echo -e "    -------------------------"
           done
+          
+          # 生成补丁汇总日志（方便排查）
+          LOG_FILE="${OPHUB_PATCH_DIR}/dts_patch_summary.log"
+          echo "📊 OPHUB DTS补丁生成汇总日志" > "${LOG_FILE}"
+          echo "=============================================" >> "${LOG_FILE}"
+          echo "生成时间：$(date +%Y-%m-%d\ %H:%M:%S\ %Z)" >> "${LOG_FILE}"
+          echo "内核版本目录：${DIR_NAME}" >> "${LOG_FILE}"
+          echo "内核DTS子目录：${KERNEL_DTS_SUBDIR}" >> "${LOG_FILE}"
+          echo "DTS源目录：${{ env.DTS_SRC_DIR_ABS }}" >> "${LOG_FILE}"
+          echo "补丁输出目录：${OPHUB_PATCH_DIR}" >> "${LOG_FILE}"
+          echo "生成补丁总数：${PATCH_COUNT}" >> "${LOG_FILE}"
+          echo "=============================================" >> "${LOG_FILE}"
+          echo "补丁文件列表：" >> "${LOG_FILE}"
+          for patch in "${PATCH_FILES[@]}"; do
+            echo "  - $(basename "$patch")" >> "${LOG_FILE}"
+          done
+          echo "=============================================" >> "${LOG_FILE}"
+          echo "✅ 汇总日志已生成：${LOG_FILE}"
+          cat "${LOG_FILE}" | grep -E "📊|生成时间|内核版本|生成补丁总数|✅"
 
-      - name: 6. 提交补丁到仓库
+      - name: 6. 提交补丁到仓库（全兼容+容错）
         run: |
+          # 读取全局环境变量
+          OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
+          DIR_NAME="${{ env.DIR_NAME }}"
+          KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
+          
+          # 配置Git用户
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 添加补丁文件
-          git add "${{ env.OPHUB_PATCH_DIR }}"/
+          # 查找有效补丁文件
+          shopt -s nullglob
+          PATCH_FILES=($(find "${OPHUB_PATCH_DIR}" -name "*.patch" -not -name ".*"))
+          shopt -u nullglob
+          PATCH_COUNT=${#PATCH_FILES[@]}
           
-          # 检查是否有更改
-          if git diff --cached --quiet; then
-            echo "ℹ️ 无新补丁，无需提交"
-          else
-            # 显示更改
-            echo "📋 提交的文件："
-            git diff --cached --name-only
-            
-            # 提交
-            COMMIT_MSG="智能DTS补丁: ${{ env.DIR_NAME }} | 内核子目录: ${{ env.KERNEL_DTS_SUBDIR }} | 补丁数: $(find "${{ env.OPHUB_PATCH_DIR }}" -name "*.patch" 2>/dev/null | wc -l)"
-            git commit -m "$COMMIT_MSG"
-            
-            # 推送到仓库
-            git push origin main
-            echo "✅ 补丁已提交并推送"
+          if [ "${PATCH_COUNT}" -eq 0 ]; then
+            echo "ℹ️  无有效补丁文件，无需提交"
+            exit 0
           fi
+          
+          # 添加补丁文件到Git暂存区
+          git add "${PATCH_FILES[@]}"
+          git add "${OPHUB_PATCH_DIR}/dts_patch_summary.log"
+          
+          # 检查是否有实际更改
+          if git diff --cached --quiet; then
+            echo "ℹ️  无新的补丁更改，无需提交"
+            exit 0
+          fi
+          
+          # 提交并推送（兼容所有Git版本）
+          echo -e "\n📋 待提交的文件："
+          git diff --cached --name-only | sort
+          COMMIT_MSG="chore(dts): 智能生成${DIR_NAME} DTS补丁 | 子目录:${KERNEL_DTS_SUBDIR} | 数量:${PATCH_COUNT}"
+          git commit -m "${COMMIT_MSG}"
+          
+          # 获取当前分支（兼容git branch --show-current和低版本Git）
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          git push origin "${CURRENT_BRANCH}"
+          
+          # 提交结果汇总
+          echo -e "\n✅ 操作完成！"
+          echo "  📤 补丁已推送到分支：${CURRENT_BRANCH}"
+          echo "  📦 提交信息：${COMMIT_MSG}"
+          echo "  🔢 提交补丁数：${PATCH_COUNT}"
+          echo "  📁 补丁目录：${OPHUB_PATCH_DIR}"
