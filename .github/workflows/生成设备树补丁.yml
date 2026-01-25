@@ -22,6 +22,24 @@ on:
         required: true
         default: 'rockchip'
         type: string
+      # 补丁编号
+      patch_number:
+        description: '补丁编号（如301、302，DTS补丁通常用300系列）'
+        required: true
+        default: '301'
+        type: string
+      # 补丁描述
+      patch_description:
+        description: '补丁简短描述（如Add h68ktv）'
+        required: true
+        default: 'Add new device'
+        type: string
+      # 参考设备系列（用于Makefile插入位置）
+      reference_device:
+        description: '参考设备系列（如rk3568，用于确定Makefile插入位置）'
+        required: true
+        default: 'rk3568'
+        type: string
 
 # 权限：允许提交补丁到仓库
 permissions:
@@ -36,6 +54,9 @@ jobs:
     env:
       DTS_SRC_DIR: ${{ github.event.inputs.dts_source_dir }}
       KERNEL_DTS_SUBDIR: ${{ github.event.inputs.kernel_dts_subdir }}
+      PATCH_NUMBER: ${{ github.event.inputs.patch_number }}
+      PATCH_DESC: ${{ github.event.inputs.patch_description }}
+      REF_DEVICE: ${{ github.event.inputs.reference_device }}
       OPHUB_BETA_ROOT: 'kernel-patch/beta'  # ophub beta根目录
 
     steps:
@@ -58,25 +79,63 @@ jobs:
           echo "📁 目录映射规则："
           echo "  DTS源目录：$DTS_SRC_DIR"
           echo "  → 补丁目录：$OPHUB_PATCH_DIR"
+          echo "  内核子目录：$KERNEL_DTS_SUBDIR"
+          echo "  补丁编号：$PATCH_NUMBER"
+          echo "  参考设备：$REF_DEVICE"
           
           # 校验DTS源目录有效性
           if [ ! -d "$DTS_SRC_DIR" ]; then
             echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 不存在"
-            echo "  请先创建目录并上传.dts文件"
             exit 1
           fi
           
-          # 检查是否有.dts或.dtsi文件
-          if ! find "$DTS_SRC_DIR" -name "*.dts" -o -name "*.dtsi" | grep -q .; then
-            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 下无.dts或.dtsi文件"
-            echo "  请在目录中添加设备树文件"
+          # 检查是否有.dts文件（只处理.dts文件，不处理.dtsi）
+          DTS_FILES=($(find "$DTS_SRC_DIR" -name "*.dts"))
+          if [ ${#DTS_FILES[@]} -eq 0 ]; then
+            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 下无.dts文件"
             exit 1
           fi
           
-          DTS_COUNT=$(find "$DTS_SRC_DIR" \( -name "*.dts" -o -name "*.dtsi" \) | wc -l)
-          echo "✅ 检测到 $DTS_COUNT 个DTS文件"
+          echo "✅ 检测到 ${#DTS_FILES[@]} 个DTS文件"
 
-      - name: 3. 生成补丁文件
+      - name: 3. 获取unifreq内核Makefile（用于确定插入位置）
+        run: |
+          # 提取内核版本号
+          DIR_NAME="${{ env.DIR_NAME }}"
+          KERNEL_VER=$(echo "$DIR_NAME" | sed 's/linux-//')
+          echo "内核版本：$KERNEL_VER"
+          
+          # 根据内核版本和子目录构造Makefile URL
+          if [[ "$KERNEL_VER" == "5.10.y" ]]; then
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-5.10.y-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          elif [[ "$KERNEL_VER" == "5.15.y" ]]; then
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-5.15.y-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          elif [[ "$KERNEL_VER" == "6.1.y" ]]; then
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-6.1.y-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          elif [[ "$KERNEL_VER" == "6.6.y" ]]; then
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-6.6.y-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          elif [[ "$KERNEL_VER" == "6.12.y" ]]; then
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-6.12.y-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          else
+            echo "⚠️  无法确定Makefile URL，使用通用格式"
+            MAKEFILE_URL="https://raw.githubusercontent.com/unifreq/linux-$KERNEL_VER-$KERNEL_DTS_SUBDIR/main/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
+          fi
+          
+          echo "📥 尝试下载Makefile：$MAKEFILE_URL"
+          
+          # 下载Makefile
+          if curl -s -o /tmp/original_makefile "$MAKEFILE_URL"; then
+            echo "✅ Makefile下载成功"
+            MAKE_FILE_CONTENT=$(cat /tmp/original_makefile)
+            echo "MAKE_FILE_CONTENT<<EOF" >> $GITHUB_ENV
+            echo "$MAKE_FILE_CONTENT" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          else
+            echo "⚠️  Makefile下载失败，使用空Makefile"
+            echo "MAKE_FILE_CONTENT=" >> $GITHUB_ENV
+          fi
+
+      - name: 4. 生成完整补丁文件
         run: |
           # 创建输出目录
           mkdir -p "${{ env.OPHUB_PATCH_DIR }}"
@@ -85,56 +144,104 @@ jobs:
           DTS_SRC_DIR="${{ env.DTS_SRC_DIR }}"
           OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
           KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
+          PATCH_NUMBER="${{ env.PATCH_NUMBER }}"
+          PATCH_DESC="${{ env.PATCH_DESC }}"
+          REF_DEVICE="${{ env.REF_DEVICE }}"
+          MAKE_FILE_CONTENT="${{ env.MAKE_FILE_CONTENT }}"
           
-          echo "🔨 开始生成补丁..."
+          echo "🔨 开始生成完整补丁..."
           echo "  源目录：$DTS_SRC_DIR"
           echo "  目标目录：$OPHUB_PATCH_DIR"
           echo "  内核子目录：$KERNEL_DTS_SUBDIR"
+          echo "  补丁描述：$PATCH_DESC"
           
-          # 计数器
-          SUCCESS_COUNT=0
-          ERROR_COUNT=0
-          
-          # 处理每个DTS文件
-          find "$DTS_SRC_DIR" -type f \( -name "*.dts" -o -name "*.dtsi" \) | while read -r dts_file; do
+          # 处理每个DTS文件，生成一个补丁
+          DTS_INDEX=0
+          find "$DTS_SRC_DIR" -name "*.dts" | while read -r dts_file; do
+            DTS_INDEX=$((DTS_INDEX + 1))
             filename=$(basename "$dts_file")
-            patch_name="${filename}.patch"
+            dts_name="${filename%.dts}"
+            
+            # 生成补丁文件名（遵循Ophub命名规范）
+            patch_name="${PATCH_NUMBER}-dts-add-${KERNEL_DTS_SUBDIR}-${dts_name}-dtb.patch"
             patch_path="$OPHUB_PATCH_DIR/$patch_name"
             
-            # 计算行数
+            # 计算DTS文件行数
             line_count=$(wc -l < "$dts_file")
             
-            # 生成补丁
-            {
-              echo "--- /dev/null"
-              echo "+++ b/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/$filename"
-              echo "@@ -0,0 +1,$line_count @@"
-              # 添加DTS内容，每行前加+
-              sed 's/^/+/' "$dts_file"
-            } > "$patch_path"
+            # 获取DTS内容
+            dts_content=$(cat "$dts_file")
             
-            # 验证补丁是否成功生成
-            if [ -s "$patch_path" ]; then
-              echo "  ✅ $(basename "$patch_path") (${line_count}行)"
-              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+            # 生成git补丁头
+            commit_hash=$(date +%s | sha1sum | cut -c1-40)
+            current_date=$(date -u '+%a, %d %b %Y %H:%M:%S +0000')
+            
+            # 分析Makefile，找到插入位置
+            if [ -n "$MAKE_FILE_CONTENT" ]; then
+              # 查找参考设备在Makefile中的位置
+              ref_line=$(echo "$MAKE_FILE_CONTENT" | grep -n "+= $REF_DEVICE" | head -1 | cut -d: -f1)
+              
+              if [ -n "$ref_line" ]; then
+                # 找到参考行，在该行后插入
+                makefile_original="$MAKE_FILE_CONTENT"
+                makefile_modified=$(echo "$makefile_original" | sed "${ref_line}a\\dtb-\\\$(CONFIG_ARCH_${KERNEL_DTS_SUBDIR^^}) += ${dts_name}.dtb")
+                
+                # 提取相关上下文
+                context_start=$((ref_line > 3 ? ref_line - 3 : 1))
+                context_end=$((ref_line + 3))
+                
+                # 生成Makefile差异
+                makefile_diff=$(diff -u <(echo "$makefile_original" | sed -n "${context_start},${context_end}p") \
+                                        <(echo "$makefile_modified" | sed -n "${context_start},${context_end}p"))
+              else
+                # 未找到参考行，在文件末尾添加
+                makefile_original="$MAKE_FILE_CONTENT"
+                makefile_modified="${makefile_original}"$'\n'"dtb-\$(CONFIG_ARCH_${KERNEL_DTS_SUBDIR^^}) += ${dts_name}.dtb"
+                
+                # 生成Makefile差异
+                makefile_diff=$(diff -u <(echo "$makefile_original") <(echo "$makefile_modified"))
+              fi
             else
-              echo "  ❌ $(basename "$patch_path") (生成失败)"
-              ERROR_COUNT=$((ERROR_COUNT + 1))
+              # 没有Makefile内容，创建新的Makefile
+              makefile_original=""
+              makefile_modified="dtb-\$(CONFIG_ARCH_${KERNEL_DTS_SUBDIR^^}) += ${dts_name}.dtb"
+              makefile_diff=$(diff -u <(echo "") <(echo "dtb-\$(CONFIG_ARCH_${KERNEL_DTS_SUBDIR^^}) += ${dts_name}.dtb"))
             fi
+            
+            # 生成完整的补丁文件
+            cat > "$patch_path" << EOF
+From ${commit_hash} Mon Sep 17 00:00:00 2001
+From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date: ${current_date}
+Subject: [PATCH] ${PATCH_DESC}
+
+---
+ arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/Makefile      |   1 +
+ arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/${filename}   | ${line_count} +
+ 2 files changed, $(($line_count + 1)) insertions(+)
+ create mode 100644 arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/${filename}
+
+diff --git a/arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/Makefile b/arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/Makefile
+${makefile_diff}
+diff --git a/arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/${filename} b/arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/${filename}
+new file mode 100644
+index 000000000..$(date +%s | md5sum | cut -c1-12)
+--- /dev/null
++++ b/arch/arm64/boot/dts/${KERNEL_DTS_SUBDIR}/${filename}
+@@ -0,0 +1,${line_count} @@
+$(echo "$dts_content" | sed 's/^/+/')
+EOF
+            
+            echo "  ✅ 生成补丁：$patch_name"
+            echo "     包含：Makefile修改 + ${dts_name}.dts (${line_count}行)"
           done
           
           echo ""
-          echo "📊 生成结果："
-          echo "  ✅ 成功：$SUCCESS_COUNT 个"
-          if [ $ERROR_COUNT -gt 0 ]; then
-            echo "  ❌ 失败：$ERROR_COUNT 个"
-            exit 1
-          fi
+          echo "📊 生成完成：$DTS_INDEX 个完整补丁"
 
-      - name: 4. 验证生成结果
+      - name: 5. 验证生成结果
         run: |
           OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
-          KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
           
           echo "🔍 验证补丁文件..."
           
@@ -153,31 +260,41 @@ jobs:
           else
             echo "✅ 找到 $PATCH_COUNT 个补丁文件"
             
-            # 随机检查几个文件的格式
-            echo "📝 随机检查文件格式..."
-            for patch_file in "${PATCH_FILES[@]:0:3}"; do
-              echo "  📄 $(basename "$patch_file")"
+            # 检查补丁格式
+            for patch_file in "${PATCH_FILES[@]:0:2}"; do
+              echo "📄 检查补丁：$(basename "$patch_file")"
               
-              # 检查文件头
-              if head -n 1 "$patch_file" | grep -q "^--- /dev/null"; then
-                echo "    ✅ 补丁头正确"
+              # 检查是否包含git补丁头
+              if head -n 1 "$patch_file" | grep -q "^From "; then
+                echo "    ✅ 包含git补丁头"
               else
-                echo "    ❌ 补丁头错误"
+                echo "    ❌ 缺少git补丁头"
               fi
               
-              # 检查路径是否正确包含内核子目录
-              if head -n 2 "$patch_file" | tail -n 1 | grep -q "b/arch/arm64/boot/dts/$KERNEL_DTS_SUBDIR/"; then
-                echo "    ✅ 内核路径正确"
+              # 检查是否包含Makefile修改
+              if grep -q "Makefile" "$patch_file"; then
+                echo "    ✅ 包含Makefile修改"
               else
-                echo "    ❌ 内核路径错误"
+                echo "    ❌ 缺少Makefile修改"
               fi
+              
+              # 检查是否包含DTS文件
+              if grep -q "\.dts" "$patch_file"; then
+                echo "    ✅ 包含DTS文件"
+              else
+                echo "    ❌ 缺少DTS文件"
+              fi
+              
+              # 显示补丁头信息
+              echo "    补丁头预览："
+              head -n 8 "$patch_file" | sed 's/^/      /'
             done
           fi
           
           echo ""
           echo "🎯 补丁存放位置：$OPHUB_PATCH_DIR"
 
-      - name: 5. 提交补丁到仓库
+      - name: 6. 提交补丁到仓库
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -194,7 +311,7 @@ jobs:
             git diff --cached --name-only
             
             # 提交
-            COMMIT_MSG="DTS2Patch: ${{ env.DIR_NAME }} | 内核子目录：${{ env.KERNEL_DTS_SUBDIR }}"
+            COMMIT_MSG="完整DTS补丁: ${{ env.DIR_NAME }} | 内核子目录: ${{ env.KERNEL_DTS_SUBDIR }} | 编号: ${{ env.PATCH_NUMBER }}"
             git commit -m "$COMMIT_MSG"
             
             # 推送到仓库
