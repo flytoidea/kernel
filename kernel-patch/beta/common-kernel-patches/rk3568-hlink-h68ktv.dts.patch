@@ -1,5 +1,5 @@
 --- /dev/null
-+++ b/arch/arm64/boot/dts/amlogic/rk3568-hlink-h68ktv.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3568-hlink-h68ktv.dts
 @@ -0,0 +1,751 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +// Copyright (c) 2022 AmadeusGhost <amadeus@jmu.edu.cn>
