@@ -1,79 +1,98 @@
-# 自动将DTS转换为ophub规范补丁，并存放到kernel-patch/beta对应内核版本目录
-name: 生成设备树补丁
+# 手动触发-指定路径DTS转ophub规范补丁
+name: 生成设备数补丁
+# 仅手动触发，取消所有自动触发条件
 on:
-  # 触发条件：上传/修改/删除custom-dts目录下的.dts文件时自动触发
-  push:
-    paths:
-      - 'custom-dts/**/*.dts'
-  # 手动触发：Actions页面可手动运行，方便测试
   workflow_dispatch:
+    inputs:
+      # 手动输入参数：指定要转换的DTS目录（仓库内相对路径）
+      dts_dir:
+        description: '指定DTS所在目录（仓库内相对路径，如custom-dts/5.15.y）'
+        required: true
+        default: 'custom-dts/5.15.y'
+        type: string
+      # 固定内核DTS子目录（RK3568专属，无需修改）
+      kernel_dts_subdir:
+        description: '内核DTS子目录（RK3568填rockchip，无需改）'
+        required: true
+        default: 'rockchip'
+        type: string
 
-# 权限：允许工作流提交生成的补丁到仓库
+# 权限：允许提交补丁到仓库
 permissions:
   contents: write
 
 jobs:
-  dts2patch:
+  dts2patch-manual:
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
+    env:
+      # 从手动输入参数获取值，传递到后续步骤
+      DTS_TARGET_DIR: ${{ github.event.inputs.dts_dir }}
+      KERNEL_DTS_SUBDIR: ${{ github.event.inputs.kernel_dts_subdir }}
+      PATCH_OUTPUT_ROOT: 'kernel-patch/beta'
     steps:
       - name: 1. 拉取仓库最新代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          persist-credentials: true # 保留凭证，用于提交补丁
+          persist-credentials: true
 
-      - name: 2. 定义核心配置（RK3568专属，无需修改）
+      - name: 2. 检查指定的DTS目录是否存在
         run: |
-          # 内核DTS目录（RK3568固定为rockchip/，对应arch/arm64/boot/dts/rockchip/）
-          echo "KERNEL_DTS_SUBDIR=rockchip" >> $GITHUB_ENV
-          # DTS根目录/补丁输出根目录
-          echo "DTS_ROOT=custom-dts" >> $GITHUB_ENV
-          echo "PATCH_OUTPUT_ROOT=kernel-patch/beta" >> $GITHUB_ENV
+          if [ ! -d "$DTS_TARGET_DIR" ]; then
+            echo "❌ 错误：指定的DTS目录 $DTS_TARGET_DIR 不存在！"
+            exit 1
+          fi
+          if [ -z "$(ls -A $DTS_TARGET_DIR/*.dts 2>/dev/null)" ]; then
+            echo "❌ 错误：指定的DTS目录 $DTS_TARGET_DIR 下无.dts文件！"
+            exit 1
+          fi
+          echo "✅ 检测到有效DTS目录：$DTS_TARGET_DIR"
+          # 从DTS路径提取内核版本（如custom-dts/5.15.y → 5.15.y）
+          KERNEL_VER=$(basename $DTS_TARGET_DIR)
+          echo "KERNEL_VER=$KERNEL_VER" >> $GITHUB_ENV
+          echo "✅ 提取内核版本：$KERNEL_VER"
 
-      - name: 3. 遍历所有DTS文件，批量生成补丁
+      - name: 3. 生成ophub规范纯新增补丁
         run: |
-          # 遍历custom-dts下的所有.dts文件，按内核版本分类处理
-          find ${{ env.DTS_ROOT }} -name "*.dts" | while read dts_file; do
-            # 提取内核版本（如custom-dts/5.15.y/xxx.dts → 5.15.y）
-            kernel_ver=$(dirname $dts_file | awk -F '/' '{print $NF}')
-            # 提取DTS文件名（如rk3568-hlink-h68k-tv.dts）
+          # 定义补丁输出目录（kernel-patch/beta/5.15.y）
+          PATCH_OUTPUT_DIR="${{ env.PATCH_OUTPUT_ROOT }}/${{ env.KERNEL_VER }}"
+          mkdir -p $PATCH_OUTPUT_DIR
+          # 新建临时目录：模拟官方空目录（original）、修改后目录（modified）
+          TEMP_ORI="temp/original/${{ env.KERNEL_DTS_SUBDIR }}"
+          TEMP_MOD="temp/modified/${{ env.KERNEL_DTS_SUBDIR }}"
+          mkdir -p $TEMP_ORI $TEMP_MOD
+
+          # 遍历指定目录下所有DTS，批量生成补丁
+          for dts_file in ${{ env.DTS_TARGET_DIR }}/*.dts; do
             dts_name=$(basename $dts_file)
-            # 补丁文件名（如rk3568-hlink-h68k-tv.dts.patch）
             patch_name="${dts_name%.dts}.dts.patch"
-            # 定义临时目录（模拟官方空目录/修改后目录，生成纯新增补丁）
-            temp_ori="temp/original/${{ env.KERNEL_DTS_SUBDIR }}"
-            temp_mod="temp/modified/${{ env.KERNEL_DTS_SUBDIR }}"
-            # 定义补丁输出目录（kernel-patch/beta/5.15.y）
-            patch_output_dir="${{ env.PATCH_OUTPUT_ROOT }}/$kernel_ver"
-            # 创建所需目录
-            mkdir -p $temp_ori $temp_mod $patch_output_dir
-            # 复制DTS到修改后目录（原始目录保持空，生成纯新增补丁）
-            cp $dts_file $temp_mod/
-            # 核心命令：生成unified格式纯新增补丁
-            diff -Naur temp/original/ temp/modified/ > $patch_output_dir/$patch_name
-            # 清理补丁中多余的临时目录路径（关键：让补丁路径匹配ophub编译规范）
-            sed -i "s|temp/original/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $patch_output_dir/$patch_name
-            sed -i "s|temp/modified/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $patch_output_dir/$patch_name
-            # 确保补丁为UTF-8编码，避免编译乱码
-            iconv -f utf-8 -t utf-8 -c $patch_output_dir/$patch_name > $patch_output_dir/$patch_name.utf8
-            mv $patch_output_dir/$patch_name.utf8 $patch_output_dir/$patch_name
-            # 输出日志
-            echo "✅ 成功转换：$dts_file → $patch_output_dir/$patch_name"
+            # 复制DTS到修改后目录，原始目录保持空（生成纯新增补丁）
+            cp $dts_file $TEMP_MOD/
+            # 核心diff命令：生成unified格式补丁
+            diff -Naur temp/original/ temp/modified/ > $PATCH_OUTPUT_DIR/$patch_name
+            # 清理补丁中临时目录路径，匹配ophub编译规范
+            sed -i "s|temp/original/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $PATCH_OUTPUT_DIR/$patch_name
+            sed -i "s|temp/modified/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $PATCH_OUTPUT_DIR/$patch_name
+            # 强制UTF-8编码，避免编译乱码
+            iconv -f utf-8 -t utf-8 -c $PATCH_OUTPUT_DIR/$patch_name > $PATCH_OUTPUT_DIR/$patch_name.utf8
+            mv $PATCH_OUTPUT_DIR/$patch_name.utf8 $PATCH_OUTPUT_DIR/$patch_name
+            echo "✅ 生成补丁：$PATCH_OUTPUT_DIR/$patch_name"
           done
+
           # 清理临时文件
           rm -rf temp/
+          echo "✅ 所有DTS补丁生成完成！"
 
-      - name: 4. 自动提交生成的补丁到仓库
+      - name: 4. 自动提交补丁到仓库
         run: |
-          # 配置git提交信息
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # 添加补丁文件到暂存区
+          # 添加补丁文件
           git add ${{ env.PATCH_OUTPUT_ROOT }}/**/*.patch
           # 提交（无新文件则跳过）
-          git commit -m "Auto generate DTS patch for ophub [$(date +%Y-%m-%d %H:%M:%S)]" || echo "ℹ 无新的DTS文件，无需提交补丁"
-          # 推送到仓库主分支（可根据你的分支修改，如main/master）
-          git push origin main || echo "ℹ 无新的补丁需要推送"
+          git commit -m "Manual generate DTS patch: ${{ env.DTS_TARGET_DIR }} → ${{ env.PATCH_OUTPUT_ROOT }}/${{ env.KERNEL_VER }} [$(date +%Y-%m-%d %H:%M:%S)]" || echo "ℹ 无新补丁需要提交"
+          # 推送到仓库主分支（非main分支请改为master）
+          git push origin main || echo "ℹ 无新补丁需要推送"
