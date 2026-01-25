@@ -9,14 +9,13 @@ on:
         description: '选择DTS源目录（该目录与内核补丁下beta子目录名对应）'
         required: true
         type: choice
-        default: 'custom-dts/common-kernel-patches'
+        default: 'custom-dts/linux-6.12.y'
         options:
           - custom-dts/linux-5.10.y
           - custom-dts/linux-5.15.y
           - custom-dts/linux-6.1.y
           - custom-dts/linux-6.6.y
-          - custom-dts/linux-6.12.y  
-          - custom-dts/common-kernel-patches
+          - custom-dts/linux-6.12.y
       # 手动输入：内核DTS子目录（默认rockchip，匹配unifreq dts子目录）
       kernel_dts_subdir:
         description: '输入内核DTS子目录（如rockchip、sunxi、amlogic，匹配soc型号用）'
