@@ -6,7 +6,7 @@ on:
     inputs:
       # 下拉选择：DTS源目录（与ophub beta子目录名完全一致）
       dts_source_dir:
-        description: '选择DTS源目录（仓库内，与ophub beta子目录名一致）'
+        description: '选择DTS源目录（该目录与内核补丁下beta子目录名对应）'
         required: true
         type: choice
         default: 'custom-dts/common-kernel-patches'
@@ -19,7 +19,7 @@ on:
           - custom-dts/common-kernel-patches
       # 手动输入：内核DTS子目录（默认rockchip，匹配unifreq dts子目录）
       kernel_dts_subdir:
-        description: '输入内核DTS子目录（如rockchip、sunxi、amlogic，默认rockchip）'
+        description: '输入内核DTS子目录（如rockchip、sunxi、amlogic，匹配soc型号用）'
         required: true
         default: 'rockchip'
         type: string
