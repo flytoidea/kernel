@@ -1,0 +1,44 @@
+name: 快速复制核心脚本
+
+on:
+  workflow_dispatch:
+
+jobs:
+  quick-clone:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        
+      - name: 下载并提取核心脚本
+        run: |
+          echo "下载 Ophub 核心脚本..."
+          
+          # 创建目录
+          mkdir -p scripts files/kernel
+          
+          # 下载核心脚本文件
+          BASE_URL="https://raw.githubusercontent.com/ophub/amlogic-s9xxx-armbian/main"
+          
+          # 下载 files/kernel/ 下的脚本
+          for script in "kernel-download.sh" "kernel-patch.sh" "kernel-compile.sh" "kernel-clang.sh"; do
+            echo "下载: $script"
+            curl -sSL "$BASE_URL/files/kernel/$script" -o "files/kernel/$script"
+            chmod +x "files/kernel/$script"
+          done
+          
+          # 下载主脚本
+          echo "下载主脚本"
+          curl -sSL "$BASE_URL/scripts/kernel.sh" -o "scripts/kernel.sh"
+          chmod +x "scripts/kernel.sh"
+          
+          # 下载补丁脚本的依赖
+          echo "下载其他必要文件"
+          curl -sSL "$BASE_URL/files/kernel/patch/armbian.patch" -o "files/kernel/armbian.patch" 2>/dev/null || true
+          
+          echo "✅ 核心脚本下载完成"
+          
+          # 显示文件列表
+          echo "📁 下载的文件:"
+          find scripts files/kernel -type f | sort
