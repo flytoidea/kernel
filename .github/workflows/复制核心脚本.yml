@@ -1,44 +1,141 @@
-name: 快速复制核心脚本
+name: 一键复制 Ophub 核心脚本
 
 on:
   workflow_dispatch:
+    inputs:
+      clean_copy:
+        description: '是否清理现有脚本文件'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
 
 jobs:
-  quick-clone:
+  copy-scripts:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 检出仓库
+      - name: 1. 检出当前仓库
         uses: actions/checkout@v4
-        
-      - name: 下载并提取核心脚本
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: 2. 清理现有脚本（可选）
+        if: ${{ inputs.clean_copy }}
         run: |
-          echo "下载 Ophub 核心脚本..."
+          echo "🧹 清理现有脚本文件..."
+          rm -rf files/kernel scripts 2>/dev/null || true
+          mkdir -p files/kernel scripts
+
+      - name: 3. 创建目录结构
+        run: |
+          echo "📂 创建目录结构..."
+          mkdir -p files/kernel
+          mkdir -p scripts
+          ls -la
+
+      - name: 4. 下载核心脚本文件
+        run: |
+          echo "⬇️ 开始下载 Ophub 核心脚本..."
           
-          # 创建目录
-          mkdir -p scripts files/kernel
-          
-          # 下载核心脚本文件
+          # Ophub 仓库的基础URL
           BASE_URL="https://raw.githubusercontent.com/ophub/amlogic-s9xxx-armbian/main"
           
+          # 定义要下载的文件列表
+          KERNEL_SCRIPTS=(
+            "kernel-download.sh"
+            "kernel-patch.sh"
+            "kernel-compile.sh"
+            "kernel-clang.sh"
+            "kernel-gcc.sh"
+          )
+          
+          SCRIPT_FILES=(
+            "kernel.sh"
+          )
+          
           # 下载 files/kernel/ 下的脚本
-          for script in "kernel-download.sh" "kernel-patch.sh" "kernel-compile.sh" "kernel-clang.sh"; do
-            echo "下载: $script"
-            curl -sSL "$BASE_URL/files/kernel/$script" -o "files/kernel/$script"
-            chmod +x "files/kernel/$script"
+          echo "📥 下载 kernel 脚本..."
+          for script in "${KERNEL_SCRIPTS[@]}"; do
+            echo "  下载: $script"
+            curl -sSL -f "$BASE_URL/files/kernel/$script" \
+              -o "files/kernel/$script" || echo "  警告: $script 下载失败"
           done
           
-          # 下载主脚本
-          echo "下载主脚本"
-          curl -sSL "$BASE_URL/scripts/kernel.sh" -o "scripts/kernel.sh"
-          chmod +x "scripts/kernel.sh"
+          # 下载 scripts/ 下的脚本
+          echo "📥 下载主脚本..."
+          for script in "${SCRIPT_FILES[@]}"; do
+            echo "  下载: $script"
+            curl -sSL -f "$BASE_URL/scripts/$script" \
+              -o "scripts/$script" || echo "  警告: $script 下载失败"
+          done
           
-          # 下载补丁脚本的依赖
-          echo "下载其他必要文件"
-          curl -sSL "$BASE_URL/files/kernel/patch/armbian.patch" -o "files/kernel/armbian.patch" 2>/dev/null || true
+          # 确保所有脚本可执行
+          chmod +x files/kernel/*.sh 2>/dev/null || true
+          chmod +x scripts/*.sh 2>/dev/null || true
+
+      - name: 5. 验证下载的文件
+        run: |
+          echo "🔍 验证下载的文件..."
+          echo ""
+          echo "📁 files/kernel/ 目录:"
+          if [ -d "files/kernel" ]; then
+            ls -la files/kernel/ || echo "目录为空"
+          else
+            echo "目录不存在"
+          fi
           
-          echo "✅ 核心脚本下载完成"
+          echo ""
+          echo "📁 scripts/ 目录:"
+          if [ -d "scripts" ]; then
+            ls -la scripts/ || echo "目录为空"
+          else
+            echo "目录不存在"
+          fi
           
-          # 显示文件列表
-          echo "📁 下载的文件:"
-          find scripts files/kernel -type f | sort
+          echo ""
+          echo "📊 文件统计:"
+          echo "  下载的脚本文件: $(find files/kernel scripts -name "*.sh" 2>/dev/null | wc -l) 个"
+          
+          # 检查关键文件是否存在
+          echo ""
+          echo "✅ 关键文件检查:"
+          [ -f "files/kernel/kernel-patch.sh" ] && echo "  ✓ kernel-patch.sh" || echo "  ✗ kernel-patch.sh"
+          [ -f "files/kernel/kernel-compile.sh" ] && echo "  ✓ kernel-compile.sh" || echo "  ✗ kernel-compile.sh"
+          [ -f "scripts/kernel.sh" ] && echo "  ✓ kernel.sh" || echo "  ✗ kernel.sh"
+
+      - name: 6. 创建配置文件
+        run: |
+          echo "⚙️ 创建配置文件..."
+          
+          # 创建配置文件目录
+          mkdir -p kernel-config/release
+          
+          # 创建默认配置文件
+          CONFIG_FILE="kernel-config/release/stable"
+          
+          # 如果配置文件不存在，创建一个简单的
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "# 内核配置文件" > "$CONFIG_FILE"
+            echo "# 基于 Ophub 的稳定配置" >> "$CONFIG_FILE"
+            echo "# 创建时间: $(date)" >> "$CONFIG_FILE"
+            echo "" >> "$CONFIG_FILE"
+            echo "# 基本配置" >> "$CONFIG_FILE"
+            echo "CONFIG_LOCALVERSION=\"-beta\"" >> "$CONFIG_FILE"
+            echo "# 根据需要添加更多配置..." >> "$CONFIG_FILE"
+            echo "✅ 已创建配置文件: $CONFIG_FILE"
+          else
+            echo "ℹ️ 配置文件已存在: $CONFIG_FILE"
+          fi
+
+      - name: 7. 创建使用说明
+        run: |
+          echo "📝 创建使用说明..."
+          
+          cat > README-OPHUB-SCRIPTS.md << 'EOF'
+# Ophub 内核编译脚本使用说明
+
+## 📁 文件结构
