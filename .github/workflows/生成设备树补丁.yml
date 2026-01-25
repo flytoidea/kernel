@@ -84,8 +84,7 @@ jobs:
       - name: 4. 智能生成DTS补丁（核心逻辑）
         run: |
           cd "${GITHUB_WORKSPACE}"
-          
-          cat > generate_intelligent_patch.py << 'PYTHON_EOF'
+          cat > generate_intelligent_patch.py <<'PYTHON_EOF'
 #!/usr/bin/env python3
 import os
 import re
@@ -300,7 +299,6 @@ def main():
 if __name__ == "__main__":
     main()
 PYTHON_EOF
-          
           chmod +x generate_intelligent_patch.py
           python3 generate_intelligent_patch.py
           rm -f generate_intelligent_patch.py
