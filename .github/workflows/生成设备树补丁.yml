@@ -9,14 +9,14 @@ on:
         description: '选择DTS源目录（仓库内，内核版本）'
         required: true
         type: choice
-        default: 'custom-dts/5.15.y'
+        default: 'custom-dts/common-kernel-patches'
         options:
           - custom-dts/5.10.y
           - custom-dts/5.15.y
           - custom-dts/6.1.y
           - custom-dts/6.6.y
-          - custom-dts/6.12.y  # 若ophub后续新增该目录，可直接兼容
-          - custom-dts/mainline
+          - custom-dts/6.12.y  
+          - custom-dts/common-kernel-patches
       # 手动输入：内核DTS子目录（默认rockchip，匹配unifreq dts子目录）
       kernel_dts_subdir:
         description: '输入内核DTS子目录（如rockchip、sunxi、amlogic，默认rockchip）'
