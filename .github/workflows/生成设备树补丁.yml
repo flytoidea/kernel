@@ -27,12 +27,12 @@ jobs:
           echo "--------|--------|----------" >> "$SCAN_FILE"
           
           # 查找所有内核版本目录
-          while IFS= read -r kernel_dir; do
+          find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y" | while read -r kernel_dir; do
             kernel_name=$(basename "$kernel_dir")
             echo "🔍 扫描内核: $kernel_name"
             
             # 遍历子目录
-            while IFS= read -r subdir; do
+            find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d | while read -r subdir; do
               subdir_name=$(basename "$subdir")
               dts_count=$(find "$subdir" -type f -name "*.dts" | wc -l)
               
@@ -40,8 +40,8 @@ jobs:
                 echo "$kernel_name | $subdir_name | $dts_count" >> "$SCAN_FILE"
                 echo "  📂 子目录 $subdir_name: $dts_count 个DTS文件"
               fi
-            done < <(find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d)
-          done < <(find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y")
+            done
+          done
           
           # 显示扫描结果
           echo ""
@@ -120,7 +120,7 @@ jobs:
             
             local kernel_name=$(basename "$kernel_dir")
             local subdir_name=$(basename "$subdir")
-            local dts_name=$(basename "$dts_file" .dts")
+            local dts_name=$(basename "$dts_file" .dts)
             local dts_base=$(basename "$dts_file")
             
             # 提取设备系列（第一个'-'之前的部分）
@@ -223,21 +223,36 @@ jobs:
           SUCCESS_COUNT=0
           ERROR_COUNT=0
           
+          # 查找所有内核版本目录
+          kernel_dirs=$(find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y")
+          
+          if [ -z "$kernel_dirs" ]; then
+            echo "⚠️  未找到任何内核版本目录"
+            exit 0
+          fi
+          
           # 遍历所有内核版本目录
-          while IFS= read -r kernel_dir; do
+          for kernel_dir in $kernel_dirs; do
             kernel_name=$(basename "$kernel_dir")
             echo ""
             echo "📦 处理内核: $kernel_name"
             echo "========================================"
             
-            # 遍历所有子目录
-            while IFS= read -r subdir; do
+            # 查找所有子目录
+            subdirs=$(find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d)
+            
+            if [ -z "$subdirs" ]; then
+              echo "  ℹ️  该内核版本下无子目录"
+              continue
+            fi
+            
+            for subdir in $subdirs; do
               subdir_name=$(basename "$subdir")
               
               # 检查是否有DTS文件
-              dts_count=$(find "$subdir" -name "*.dts" | wc -l)
+              dts_files=$(find "$subdir" -name "*.dts")
               
-              if [ "$dts_count" -eq 0 ]; then
+              if [ -z "$dts_files" ]; then
                 echo "  ⏭️  跳过 $subdir_name: 无DTS文件"
                 continue
               fi
@@ -248,17 +263,15 @@ jobs:
                 continue
               fi
               
+              dts_count=$(echo "$dts_files" | wc -l)
               echo "  📁 处理 $subdir_name: 找到 $dts_count 个DTS文件"
               
               # 对DTS文件排序
-              dts_files=()
-              while IFS= read -r -d $'\0' dts_file; do
-                dts_files+=("$dts_file")
-              done < <(find "$subdir" -name "*.dts" -print0 | sort -z)
+              sorted_dts_files=$(echo "$dts_files" | sort)
               
               # 为每个DTS文件生成补丁，编号从301开始
               local_patch_number=301
-              for dts_file in "${dts_files[@]}"; do
+              for dts_file in $sorted_dts_files; do
                 echo "    🔧 处理: $(basename "$dts_file")"
                 
                 if generate_patch "$kernel_dir" "$subdir" "$dts_file" "$local_patch_number"; then
@@ -270,8 +283,8 @@ jobs:
                 local_patch_number=$((local_patch_number + 1))
                 TOTAL_PATCHES=$((TOTAL_PATCHES + 1))
               done
-            done < <(find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d)
-          done < <(find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y")
+            done
+          done
           
           echo ""
           echo "========================================"
@@ -310,19 +323,23 @@ jobs:
           echo "📁 补丁目录结构:"
           
           # 显示目录结构
-          while IFS= read -r dir; do
+          kernel_dirs=$(find "$PATCH_ROOT" -type d -name "linux-*")
+          for dir in $kernel_dirs; do
             echo "  $(basename "$dir")"
-            while IFS= read -r patch; do
-              echo "    📄 $(basename "$patch")"
-            done < <(find "$dir" -name "*.patch" | sort)
-          done < <(find "$PATCH_ROOT" -type d -name "linux-*")
+            patch_files=$(find "$dir" -name "*.patch" | sort)
+            for patch_file in $patch_files; do
+              echo "    📄 $(basename "$patch_file")"
+            done
+          done
           
           # 检查补丁格式
           echo ""
           echo "🔬 检查补丁格式:"
           ERROR_COUNT=0
           
-          while IFS= read -r patch_file; do
+          all_patches=$(find "$PATCH_ROOT" -name "*.patch")
+          
+          for patch_file in $all_patches; do
             patch_name=$(basename "$patch_file")
             
             # 检查关键元素
@@ -351,7 +368,7 @@ jobs:
             fi
             
             echo "  ✅ $patch_name: 格式正确"
-          done < <(find "$PATCH_ROOT" -name "*.patch")
+          done
           
           if [ "$ERROR_COUNT" -gt 0 ]; then
             echo "❌ 有 $ERROR_COUNT 个补丁格式错误"
