@@ -1,7 +1,8 @@
-# 自动扫描并转换所有custom-dts下的设备树
-name: 自动转换设备树补丁
+name: 转换设备树补丁
 on:
   workflow_dispatch:  # 手动触发
+#  schedule:
+#    - cron: '0 0 * * *'  # 每天自动运行一次
 
 # 权限
 permissions:
@@ -19,6 +20,7 @@ jobs:
 
       - name: 2. 扫描custom-dts目录结构
         run: |
+          set -euo pipefail
           echo "📁 开始扫描custom-dts目录..."
           
           # 创建扫描结果文件
@@ -26,23 +28,22 @@ jobs:
           echo "内核版本 | 子目录 | DTS文件数" > "$SCAN_FILE"
           echo "--------|--------|----------" >> "$SCAN_FILE"
           
-          # 查找所有内核版本目录
-          find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y" | while read kernel_dir; do
-            if [ -d "$kernel_dir" ]; then
-              kernel_name=$(basename "$kernel_dir")
-              echo "🔍 扫描内核: $kernel_name"
+          # 查找所有内核版本目录（过滤非linux-*.y），用while read避免子shell
+          find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y" -print0 | while IFS= read -r -d '' kernel_dir; do
+            kernel_name=$(basename "$kernel_dir")
+            echo "🔍 扫描内核: $kernel_name"
+            
+            # 遍历子目录，过滤空目录
+            find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' subdir; do
+              subdir_name=$(basename "$subdir")
+              # 精准统计dts文件，避免空输出
+              dts_count=$(find "$subdir" -type f -name "*.dts" | wc -l)
               
-              # 查找所有子目录
-              find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d | while read subdir; do
-                subdir_name=$(basename "$subdir")
-                dts_count=$(find "$subdir" -name "*.dts" | wc -l)
-                
-                if [ $dts_count -gt 0 ]; then
-                  echo "$kernel_name | $subdir_name | $dts_count" >> "$SCAN_FILE"
-                  echo "  📂 子目录 $subdir_name: $dts_count 个DTS文件"
-                fi
-              done
-            fi
+              if [ "$dts_count" -gt 0 ]; then
+                echo "$kernel_name | $subdir_name | $dts_count" >> "$SCAN_FILE"
+                echo "  📂 子目录 $subdir_name: $dts_count 个DTS文件"
+              fi
+            done
           done
           
           # 显示扫描结果
@@ -52,28 +53,34 @@ jobs:
 
       - name: 3. 为每个内核版本和子目录生成补丁
         run: |
+          set -euo pipefail
           # 工具函数：查找Makefile中的插入位置
           find_makefile_insertion_point() {
             local makefile="$1"
             local dts_name="$2"
+            # 提取设备系列（取短横线前的部分，适配rk3568、rk3568-hlink等格式）
+            local device_series=$(echo "$dts_name" | cut -d'-' -f1 | tr -d '[:space:]')
+            [ -z "$device_series" ] && device_series="$dts_name"
             
-            # 提取设备系列，如 rk3568-hlink-h68ktv -> rk3568
-            local device_series=$(echo "$dts_name" | grep -o '^[a-zA-Z0-9]*-[a-zA-Z0-9]*' | cut -d'-' -f1)
-            
-            if [ -z "$device_series" ]; then
-              device_series=$(echo "$dts_name" | cut -d'-' -f1)
-            fi
-            
-            # 查找Makefile中该设备系列的最后一个条目
-            local line_num=$(grep -n "+=.*$device_series" "$makefile" | tail -1 | cut -d':' -f1)
+            echo "🔍 设备系列: $device_series"
+            # 查找该设备系列的最后一个条目（忽略大小写，适配CONFIG_ARCH_RK3568/CONFIG_ARCH_rockchip）
+            local line_num=$(grep -n -i "+=.*$device_series" "$makefile" | tail -1 | cut -d':' -f1)
             
             if [ -n "$line_num" ]; then
+              echo "✅ 找到插入位置: 第 $line_num 行"
               echo "$line_num"
             else
-              # 如果没找到，在Makefile末尾添加
-              local total_lines=$(wc -l < "$makefile")
+              # 如果没找到，在Makefile末尾添加（排除空行）
+              local total_lines=$(grep -v '^[[:space:]]*$' "$makefile" | wc -l)
+              [ "$total_lines" -eq 0 ] && total_lines=1
+              echo "⚠️  未找到设备系列，将在末尾添加 (第 $total_lines 行)"
               echo "$total_lines"
             fi
+          }
+          
+          # 工具函数：生成随机7位哈希（兼容所有Linux环境）
+          gen_rand_hash() {
+            head -c 16 /dev/urandom | sha256sum | cut -c1-7
           }
           
           # 工具函数：生成补丁文件
@@ -88,131 +95,151 @@ jobs:
             local subdir_name=$(basename "$subdir")
             local dts_name=$(basename "$dts_file" .dts)
             local dts_base=$(basename "$dts_file")
-            
-            echo "    🔧 处理: $(basename "$dts_file")"
-            echo "      🔍 设备系列: $(echo "$dts_name" | grep -o '^[a-zA-Z0-9]*-[a-zA-Z0-9]*' | cut -d'-' -f1 || echo "$dts_name" | cut -d'-' -f1)"
-            
+            local device_series=$(echo "$dts_name" | cut -d'-' -f1 | tr -d '[:space:]')
+            [ -z "$device_series" ] && device_series="$dts_name"
+
             # 补丁输出目录
             local patch_output_dir="${{ github.workspace }}/kernel-patch/beta/$kernel_name"
-            mkdir -p "$patch_output_dir"
+            mkdir -p "$patch_output_dir" || { echo "❌ 无法创建目录: $patch_output_dir"; return 1; }
             
-            # 生成补丁文件名
-            local patch_filename="${patch_number}-dts-add-${subdir_name}-${dts_name}-dtb.patch"
+            # 生成补丁文件名（避免特殊字符）
+            local patch_filename="${patch_number}-dts-add-${subdir_name}-${dts_name//\//-}-dtb.patch"
             local patch_path="$patch_output_dir/$patch_filename"
             
             # 获取Makefile路径
             local makefile_path="$subdir/Makefile"
-            
-            if [ ! -f "$makefile_path" ]; then
-              echo "❌ 错误: $makefile_path 不存在"
-              return 1
-            fi
+            [ ! -f "$makefile_path" ] && { echo "❌ 错误: $makefile_path 不存在"; return 1; }
+            [ ! -s "$makefile_path" ] && { echo "❌ 错误: $makefile_path 为空文件"; return 1; }
             
             # 计算Makefile插入位置
             local insert_line=$(find_makefile_insertion_point "$makefile_path" "$dts_name")
-            echo "      ✅ 找到插入位置: 第 $insert_line 行"
+            [ -z "$insert_line" ] && insert_line=1
             
-            # 计算行数
-            local dts_line_count=$(wc -l < "$dts_file")
-            local makefile_line_count=$(wc -l < "$makefile_path")
-            
-            # 生成补丁内容
-            cat > "$patch_path" <<EOF
-From $(date +%s | sha1sum | cut -c1-40) Mon Sep 17 00:00:00 2001
-From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
-Date: $(date -u '+%a, %d %b %Y %H:%M:%S +0000')
-Subject: [PATCH] Add $dts_name
+            # 计算行数（排除空行，避免diff错误）
+            local dts_line_count=$(grep -v '^[[:space:]]*$' "$dts_file" | wc -l)
+            local makefile_line_count=$(grep -v '^[[:space:]]*$' "$makefile_path" | wc -l)
+            [ "$dts_line_count" -eq 0 ] && { echo "❌ 错误: $dts_file 为空文件"; return 1; }
 
----
- arch/arm64/boot/dts/$subdir_name/Makefile        |   1 +
- arch/arm64/boot/dts/$subdir_name/$dts_base      |   $dts_line_count +
- 2 files changed, $((dts_line_count + 1)) insertions(+)
- create mode 100644 arch/arm64/boot/dts/$subdir_name/$dts_base
-
-diff --git a/arch/arm64/boot/dts/$subdir_name/Makefile b/arch/arm64/boot/dts/$subdir_name/Makefile
-index $(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7) 100644
---- a/arch/arm64/boot/dts/$subdir_name/Makefile
-+++ b/arch/arm64/boot/dts/$subdir_name/Makefile
-@@ -$insert_line,0 +$insert_line,1 @@
-+dtb-\$(CONFIG_ARCH_$(echo $subdir_name | tr '[:lower:]' '[:upper:]')) += $dts_name.dtb
-diff --git a/arch/arm64/boot/dts/$subdir_name/$dts_base b/arch/arm64/boot/dts/$subdir_name/$dts_base
-new file mode 100644
-index 000000000..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)
---- /dev/null
-+++ b/arch/arm64/boot/dts/$subdir_name/$dts_base
-@@ -0,0 +1,$dts_line_count @@
-EOF
+            # 生成CONFIG_ARCH_XXX（全大写，适配内核标准）
+            local config_arch=$(echo "$device_series" | tr '[:lower:]' '[:upper:]')
+            local makefile_add_line="dtb-\$(CONFIG_ARCH_$config_arch) += $dts_name.dtb"
             
-            # 添加DTS内容
-            while IFS= read -r line; do
-              echo "+$line" >> "$patch_path"
-            done < "$dts_file"
-            
-            echo "      ✅ 生成补丁 [$patch_number]: $patch_filename"
+            # 生成完整的git补丁（避免特殊字符解析错误）
+            {
+              # Git补丁标准头
+              echo "From $(git rev-parse --short=40 HEAD 2>/dev/null || gen_rand_hash) Mon Sep 17 00:00:00 2001"
+              echo "From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+              echo "Date: $(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+              echo "Subject: [PATCH] $kernel_name: Add $dts_name dtb"
+              echo ""
+              echo "Add device tree blob for $dts_name"
+              echo ""
+              echo "Signed-off-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+              echo "---"
+              echo " arch/arm64/boot/dts/$subdir_name/Makefile        | 1 +"
+              echo " arch/arm64/boot/dts/$subdir_name/$dts_base      | $dts_line_count +"
+              echo " 2 files changed, $((dts_line_count + 1)) insertions(+)"
+              echo " create mode 100644 arch/arm64/boot/dts/$subdir_name/$dts_base"
+              echo ""
+              # Makefile Diff（标准格式，行号容错）
+              echo "diff --git a/arch/arm64/boot/dts/$subdir_name/Makefile b/arch/arm64/boot/dts/$subdir_name/Makefile"
+              echo "index $(gen_rand_hash)..$(gen_rand_hash) 100644"
+              echo "--- a/arch/arm64/boot/dts/$subdir_name/Makefile"
+              echo "+++ b/arch/arm64/boot/dts/$subdir_name/Makefile"
+              # 计算diff行号（适配末尾插入，避免超出范围）
+              local diff_start=$((insert_line < 5 ? 1 : insert_line - 4))
+              local diff_count=$((makefile_line_count - diff_start + 2))
+              [ "$diff_count" -lt 1 ] && diff_count=1
+              echo "@@ -$diff_start,$diff_count +$diff_start,$((diff_count + 1)) @@"
+              # 生成Makefile修改内容（用awk精准处理，避免重复+号）
+              awk -v insert="$insert_line" -v add="$makefile_add_line" '
+                NR == insert {print $0; print "+"add; next}
+                {print " " $0}
+              ' "$makefile_path" | tail -n "$((diff_count + 1))"
+              # DTS文件Diff（新文件标准格式）
+              echo ""
+              echo "diff --git a/arch/arm64/boot/dts/$subdir_name/$dts_base b/arch/arm64/boot/dts/$subdir_name/$dts_base"
+              echo "new file mode 100644"
+              echo "index 0000000..$(gen_rand_hash)"
+              echo "--- /dev/null"
+              echo "+++ b/arch/arm64/boot/dts/$subdir_name/$dts_base"
+              echo "@@ -0,0 +1,$dts_line_count @@"
+              # 添加DTS内容（处理特殊字符，保留原格式）
+              while IFS= read -r line; do
+                echo "+$line"
+              done < "$dts_file"
+              echo "---"
+              echo "Signed-off-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+            } > "$patch_path" || { echo "❌ 生成补丁失败: $patch_filename"; return 1; }
             
             # 验证补丁
-            if [ -s "$patch_path" ]; then
-              echo "      📊 补丁大小: $(wc -l < "$patch_path") 行"
+            if [ -s "$patch_path" ] && grep -q "Subject: \[PATCH\]" "$patch_path"; then
+              echo "✅ 生成补丁 [$patch_number/$patch_count]: $patch_filename"
+              return 0
             else
-              echo "      ❌ 补丁生成失败"
+              rm -f "$patch_path"
+              echo "❌ 补丁无效已删除: $patch_filename"
               return 1
             fi
           }
           
-          # 主处理逻辑
+          # 主处理逻辑（全局编号，避免重复）
           echo "🚀 开始生成设备树补丁..."
-          
-          # 统计变量
           TOTAL_PATCHES=0
           SUCCESS_COUNT=0
           ERROR_COUNT=0
+          GLOBAL_PATCH_NUM=301  # 全局补丁编号，所有子目录连续自增
           
-          # 遍历所有内核版本目录
-          find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y" | while read kernel_dir; do
+          # 遍历所有内核版本目录（-print0避免特殊文件名，无中子shell）
+          find "${{ github.workspace }}/custom-dts" -maxdepth 1 -type d -name "linux-*.y" -print0 | while IFS= read -r -d '' kernel_dir; do
+            [ ! -d "$kernel_dir" ] && continue
             kernel_name=$(basename "$kernel_dir")
             echo ""
             echo "📦 处理内核: $kernel_name"
             echo "========================================"
             
             # 遍历所有子目录
-            find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d | while read subdir; do
+            find "$kernel_dir" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' subdir; do
+              [ ! -d "$subdir" ] && continue
               subdir_name=$(basename "$subdir")
+              makefile_path="$subdir/Makefile"
               
-              # 检查是否有DTS文件
-              dts_files=($(find "$subdir" -name "*.dts"))
+              # 筛选有效DTS文件（普通文件、非空）
+              dts_files=()
+              while IFS= read -r -d '' f; do
+                dts_files+=("$f")
+              done < <(find "$subdir" -type f -name "*.dts" -s -print0)
               dts_count=${#dts_files[@]}
               
-              if [ $dts_count -eq 0 ]; then
-                echo "  ⏭️  跳过 $subdir_name: 无DTS文件"
+              if [ "$dts_count" -eq 0 ]; then
+                echo "  ⏭️  跳过 $subdir_name: 无有效DTS文件"
+                continue
+              fi
+              if [ ! -f "$makefile_path" ] || [ ! -s "$makefile_path" ]; then
+                echo "  ⏭️  跳过 $subdir_name: 无有效Makefile"
                 continue
               fi
               
-              # 检查是否有Makefile
-              if [ ! -f "$subdir/Makefile" ]; then
-                echo "  ⚠️  跳过 $subdir_name: 无Makefile文件"
-                continue
-              fi
-              
-              echo "  📁 处理 $subdir_name: 找到 $dts_count 个DTS文件"
-              
+              echo "  📁 处理 $subdir_name: 找到 $dts_count 个有效DTS文件"
               # 对DTS文件排序，确保顺序一致
-              mapfile -t sorted_dts_files < <(printf '%s\n' "${dts_files[@]}" | sort)
+              IFS=$'\n' sorted_dts_files=($(sort <<<"${dts_files[*]}"))
+              unset IFS
               
-              # 为每个DTS文件生成补丁，编号从301开始
-              local_patch_number=301
+              # 为每个DTS文件生成补丁（全局编号连续）
               for dts_file in "${sorted_dts_files[@]}"; do
-                if generate_patch "$kernel_dir" "$subdir" "$dts_file" "$local_patch_number" "$dts_count"; then
+                echo "    🔧 处理: $(basename "$dts_file")"
+                if generate_patch "$kernel_dir" "$subdir" "$dts_file" "$GLOBAL_PATCH_NUM" "$dts_count"; then
                   SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                 else
                   ERROR_COUNT=$((ERROR_COUNT + 1))
                 fi
-                
-                local_patch_number=$((local_patch_number + 1))
+                GLOBAL_PATCH_NUM=$((GLOBAL_PATCH_NUM + 1))
                 TOTAL_PATCHES=$((TOTAL_PATCHES + 1))
               done
             done
           done
           
+          # 输出统计结果（变量可正常传递，无中子shell）
           echo ""
           echo "========================================"
           echo "📊 生成统计:"
@@ -220,136 +247,166 @@ EOF
           echo "  成功: $SUCCESS_COUNT"
           echo "  失败: $ERROR_COUNT"
           
-          if [ $ERROR_COUNT -gt 0 ]; then
-            echo "❌ 有 $ERROR_COUNT 个补丁生成失败"
+          # 失败非0则退出
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "❌ 有 $ERROR_COUNT 个补丁生成失败，终止任务"
             exit 1
+          fi
+          if [ "$SUCCESS_COUNT" -eq 0 ]; then
+            echo "⚠️  未生成任何有效补丁，正常退出"
+            exit 0
           fi
 
       - name: 4. 验证生成的补丁
         run: |
+          set -euo pipefail
           echo "🔍 验证生成的补丁..."
+          PATCH_ROOT="${{ github.workspace }}/kernel-patch/beta"
+          [ ! -d "$PATCH_ROOT" ] && { echo "⚠️  补丁目录不存在，跳过验证"; exit 0; }
           
-          # 检查kernel-patch/beta目录
-          if [ ! -d "${{ github.workspace }}/kernel-patch/beta" ]; then
-            echo "❌ 错误: kernel-patch/beta 目录不存在"
-            exit 1
-          fi
-          
-          # 统计补丁文件
-          PATCH_FILES=($(find "${{ github.workspace }}/kernel-patch/beta" -name "*.patch"))
+          # 统计所有有效补丁
+          PATCH_FILES=()
+          while IFS= read -r -d '' f; do
+            PATCH_FILES+=("$f")
+          done < <(find "$PATCH_ROOT" -type f -name "*.patch" -s -print0)
           PATCH_COUNT=${#PATCH_FILES[@]}
           
-          if [ $PATCH_COUNT -eq 0 ]; then
-            echo "⚠️  警告: 未生成任何补丁文件"
+          if [ "$PATCH_COUNT" -eq 0 ]; then
+            echo "⚠️  未找到有效补丁文件，跳过验证"
             exit 0
           fi
           
-          echo "✅ 找到 $PATCH_COUNT 个补丁文件"
+          echo "✅ 找到 $PATCH_COUNT 个有效补丁文件"
           echo ""
           echo "📁 补丁目录结构:"
-          
           # 显示目录结构
-          find "${{ github.workspace }}/kernel-patch/beta" -name "*.patch" -exec dirname {} \; | sort -u | while read dir; do
-            echo "  $dir"
-            find "$dir" -name "*.patch" -exec basename {} \; | sort | while read patch; do
-              echo "    📄 $patch"
+          find "$PATCH_ROOT" -type d -name "linux-*" -print0 | while IFS= read -r -d '' dir; do
+            kernel_ver=$(basename "$dir")
+            count=$(find "$dir" -type f -name "*.patch" -s | wc -l)
+            echo "  $kernel_ver: $count 个补丁"
+            find "$dir" -type f -name "*.patch" -s | sort | while read -r p; do
+              echo "    📄 $(basename "$p")"
             done
           done
           
-          # 随机检查几个补丁的格式
+          # 严格验证补丁格式（关键项检查+模拟应用）
           echo ""
-          echo "🔬 随机检查补丁格式:"
-          for i in {1..3}; do
-            if [ ${#PATCH_FILES[@]} -ge $i ]; then
-              patch_file="${PATCH_FILES[$((RANDOM % PATCH_COUNT))]}"
-              echo "  检查: $(basename "$patch_file")"
-              
-              # 检查是否包含git头
-              if head -n 1 "$patch_file" | grep -q "^From "; then
-                echo "    ✅ 包含git补丁头"
-              else
-                echo "    ❌ 缺少git补丁头"
-              fi
-              
-              # 检查是否包含Makefile修改
-              if grep -q "Makefile" "$patch_file"; then
-                echo "    ✅ 包含Makefile修改"
-              else
-                echo "    ❌ 缺少Makefile修改"
-              fi
-              
-              # 检查是否包含DTS文件
-              if grep -q "\.dts" "$patch_file"; then
-                echo "    ✅ 包含DTS文件"
-              else
-                echo "    ❌ 缺少DTS文件"
-              fi
+          echo "🔬 严格验证补丁格式:"
+          VALID_ERROR=0
+          for patch_file in "${PATCH_FILES[@]}"; do
+            patch_name=$(basename "$patch_file")
+            # 检查关键项
+            if ! grep -qE "From .* Mon Sep 17 00:00:00 2001|Subject: \[PATCH\]|diff --git|create mode 100644" "$patch_file"; then
+              echo "  ❌ $patch_name: 缺少Git补丁标准头"
+              VALID_ERROR=$((VALID_ERROR + 1))
+              continue
+            fi
+            if ! grep -q "\.dts" "$patch_file" || ! grep -q "Makefile" "$patch_file"; then
+              echo "  ❌ $patch_name: 缺少DTS/Makefile修改内容"
+              VALID_ERROR=$((VALID_ERROR + 1))
+              continue
+            fi
+            # 模拟补丁应用（干跑，不实际修改）
+            if patch --dry-run -p1 -d /tmp < "$patch_file" 2>/dev/null; then
+              echo "  ✅ $patch_name: 格式合法，可正常应用"
+            else
+              echo "  ❌ $patch_name: 格式错误，无法应用"
+              VALID_ERROR=$((VALID_ERROR + 1))
             fi
           done
+          
+          # 验证失败则退出
+          if [ "$VALID_ERROR" -gt 0 ]; then
+            echo "❌ 有 $VALID_ERROR 个补丁格式验证失败，终止任务"
+            exit 1
+          fi
+          echo "✅ 所有补丁格式验证通过"
 
       - name: 5. 提交生成的补丁
         run: |
+          set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          PATCH_ROOT="${{ github.workspace }}/kernel-patch/beta"
+          [ ! -d "$PATCH_ROOT" ] && { echo "ℹ️  补丁目录不存在，无需提交"; exit 0; }
           
           echo "📋 检查文件变更..."
-          
-          # 检查kernel-patch/beta目录是否有变更
-          if git status --porcelain "${{ github.workspace }}/kernel-patch/beta" | grep -q .; then
-            echo "📦 检测到新补丁文件"
-            
-            # 显示将要添加的文件
-            echo "将要添加的文件:"
-            git status --porcelain "${{ github.workspace }}/kernel-patch/beta" | sed 's/^/  /'
-            
+          # 检查是否有新补丁（忽略空格/换行变更）
+          if git status --porcelain "$PATCH_ROOT" | grep -q -E "^[AM]"; then
+            echo "📦 检测到新/修改的补丁文件"
+            # 拉取最新代码，避免推送冲突
+            git pull --rebase origin "${GITHUB_REF#refs/heads/}" || git rebase --abort
             # 添加所有补丁文件
-            git add "${{ github.workspace }}/kernel-patch/beta"
+            git add "$PATCH_ROOT"
+            # 统计提交信息
+            KERNEL_VERSIONS=$(find "$PATCH_ROOT" -type d -name "linux-*" -print0 | xargs -0 basename | tr '\n' ', ' | sed 's/, $//')
+            PATCH_COUNT=$(find "$PATCH_ROOT" -type f -name "*.patch" -s | wc -l)
+            [ -z "$KERNEL_VERSIONS" ] && KERNEL_VERSIONS="未知"
+            [ "$PATCH_COUNT" -eq 0 ] && { echo "ℹ️  无有效补丁，无需提交"; exit 0; }
             
-            # 获取变更摘要
-            KERNEL_VERSIONS=$(find "${{ github.workspace }}/kernel-patch/beta" -maxdepth 1 -type d -name "linux-*" | xargs -I {} basename {} | tr '\n' ', ')
-            PATCH_COUNT=$(find "${{ github.workspace }}/kernel-patch/beta" -name "*.patch" | wc -l)
+            # 提交信息（标准化）
+            COMMIT_MSG="chore: 自动生成设备树补丁 [$PATCH_COUNT 个]
+      
+      涉及内核版本: $KERNEL_VERSIONS
+      生成时间: $(date +'%Y-%m-%d %H:%M:%S %Z')
+      扫描目录: custom-dts/
+      
+      自动扫描并生成符合Ophub标准的arm64设备树补丁，包含Makefile配置及DTS文件。
+      Signed-off-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
             
-            # 提交
-            COMMIT_MSG="自动生成设备树补丁 ($PATCH_COUNT 个补丁)
-            
-            涉及内核版本: ${KERNEL_VERSIONS%, }
-            生成时间: $(date +'%Y-%m-%d %H:%M:%S')
-            
-            自动扫描custom-dts目录并生成符合Ophub格式的补丁文件。"
-            
+            # 提交并推送（适配当前分支，不硬编码）
             git commit -m "$COMMIT_MSG"
-            
-            # 推送到仓库
-            git push origin main
-            echo "✅ 补丁已提交并推送到仓库"
+            git push origin "${GITHUB_REF#refs/heads/}"
+            echo "✅ 补丁已成功提交并推送到当前分支: ${GITHUB_REF#refs/heads/}"
           else
-            echo "ℹ️  无新补丁文件，无需提交"
+            echo "ℹ️  无新/修改的补丁文件，无需提交"
           fi
 
-      - name: 6. 生成报告
+      - name: 6. 生成执行报告
         if: always()
         run: |
-          echo "📊 任务执行报告"
-          echo "================"
-          echo "任务: 自动转换设备树补丁"
-          echo "时间: $(date)"
+          set -euo pipefail
+          REPORT_FILE="${{ github.workspace }}/dts_patch_report_$(date +%Y%m%d_%H%M%S).txt"
+          PATCH_ROOT="${{ github.workspace }}/kernel-patch/beta"
           
-          # 统计信息
-          PATCH_DIR="${{ github.workspace }}/kernel-patch/beta"
-          if [ -d "$PATCH_DIR" ]; then
+          # 生成报告内容
+          {
+            echo "==================== 设备树补丁自动生成报告 ===================="
+            echo "任务ID: $GITHUB_RUN_ID"
+            echo "触发方式: ${{ github.event_name == 'workflow_dispatch' ? '手动触发' : '定时自动触发' }}"
+            echo "执行时间: $(date +'%Y-%m-%d %H:%M:%S %Z')"
+            echo "仓库分支: ${GITHUB_REF#refs/heads/}"
+            echo "执行环境: $RUNNER_OS $RUNNER_ARCH"
+            echo "=================================================================="
             echo ""
-            echo "📁 生成的补丁:"
-            find "$PATCH_DIR" -type d -name "linux-*" | while read dir; do
-              kernel_ver=$(basename "$dir")
-              patch_count=$(find "$dir" -name "*.patch" | wc -l)
-              if [ $patch_count -gt 0 ]; then
-                echo "  $kernel_ver: $patch_count 个补丁"
-              fi
-            done
-            
-            TOTAL_PATCHES=$(find "$PATCH_DIR" -name "*.patch" | wc -l)
+            echo "📁 补丁存储目录: $PATCH_ROOT"
             echo ""
-            echo "总计: $TOTAL_PATCHES 个补丁文件"
-          else
-            echo "❌ 补丁目录不存在"
-          fi
+            if [ -d "$PATCH_ROOT" ]; then
+              TOTAL_PATCH=$(find "$PATCH_ROOT" -type f -name "*.patch" -s | wc -l)
+              KERNEL_COUNT=$(find "$PATCH_ROOT" -type d -name "linux-*" | wc -l)
+              echo "📊 全局统计: 共 $KERNEL_COUNT 个内核版本 | 生成 $TOTAL_PATCH 个有效补丁"
+              echo ""
+              echo "🔍 各内核版本补丁详情:"
+              echo "------------------------------------------------------------------"
+              find "$PATCH_ROOT" -type d -name "linux-*" -print0 | while IFS= read -r -d '' dir; do
+                kernel_ver=$(basename "$dir")
+                patch_count=$(find "$dir" -type f -name "*.patch" -s | wc -l)
+                echo "• $kernel_ver: $patch_count 个补丁"
+                find "$dir" -type f -name "*.patch" -s | sort | while read -r p; do
+                  echo "  └─ 📄 $(basename "$p") ($(wc -l < "$p") 行)"
+                done
+              done
+            else
+              echo "❌ 补丁目录不存在，未生成任何补丁"
+              TOTAL_PATCH=0
+            fi
+            echo ""
+            echo "✅ 任务状态: ${{ job.status == 'success' ? '执行成功' : job.status == 'failed' ? '执行失败' : '已取消' }}"
+            echo "=================================================================="
+          } > "$REPORT_FILE"
+          
+          # 显示报告并上传为artifact
+          echo "📊 生成执行报告: $(basename "$REPORT_FILE")"
+          cat "$REPORT_FILE"
+          # 保留报告文件，可通过GitHub Action Artifact下载
+          echo "💡 报告文件已保存，可在Action产物中下载"
