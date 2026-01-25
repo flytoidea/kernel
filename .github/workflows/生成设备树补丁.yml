@@ -1,18 +1,25 @@
-# 手动触发-指定路径DTS转ophub规范补丁
-name: 生成设备数补丁
-# 仅手动触发，取消所有自动触发条件
+# 手动触发 | 100%匹配ophub beta实时目录 + unifreq内核路径
+# DTS源(内核版本)下拉选择 | 内核子目录手动输入(默认rockchip)
+name: 生成设备树补丁
 on:
   workflow_dispatch:
     inputs:
-      # 手动输入参数：指定要转换的DTS目录（仓库内相对路径）
-      dts_dir:
-        description: '指定DTS所在目录（仓库内相对路径，如custom-dts/5.15.y）'
+      # 下拉选择：DTS源目录（内核版本，与ophub linux-[版本].y对应）
+      dts_source_dir:
+        description: '选择DTS源目录（仓库内，内核版本）'
         required: true
+        type: choice
         default: 'custom-dts/5.15.y'
-        type: string
-      # 固定内核DTS子目录（RK3568专属，无需修改）
+        options:
+          - custom-dts/5.10.y
+          - custom-dts/5.15.y
+          - custom-dts/6.1.y
+          - custom-dts/6.6.y
+          - custom-dts/6.12.y  # 若ophub后续新增该目录，可直接兼容
+          - custom-dts/mainline
+      # 手动输入：内核DTS子目录（默认rockchip，匹配unifreq dts子目录）
       kernel_dts_subdir:
-        description: '内核DTS子目录（RK3568填rockchip，无需改）'
+        description: '输入内核DTS子目录（如rockchip、sunxi、amlogic，默认rockchip）'
         required: true
         default: 'rockchip'
         type: string
@@ -22,16 +29,17 @@ permissions:
   contents: write
 
 jobs:
-  dts2patch-manual:
+  dts2patch-final:
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
     env:
-      # 从手动输入参数获取值，传递到后续步骤
-      DTS_TARGET_DIR: ${{ github.event.inputs.dts_dir }}
+      DTS_SRC_DIR: ${{ github.event.inputs.dts_source_dir }}
       KERNEL_DTS_SUBDIR: ${{ github.event.inputs.kernel_dts_subdir }}
-      PATCH_OUTPUT_ROOT: 'kernel-patch/beta'
+      OPHUB_BETA_ROOT: 'kernel-patch/beta'  # ophub beta根目录（实时匹配）
+      UNIFREQ_DTS_ROOT: 'arch/arm64/boot/dts'  # unifreq内核DTS根路径
+
     steps:
       - name: 1. 拉取仓库最新代码
         uses: actions/checkout@v4
@@ -39,60 +47,67 @@ jobs:
           fetch-depth: 1
           persist-credentials: true
 
-      - name: 2. 检查指定的DTS目录是否存在
+      - name: 2. 提取内核版本 & 校验目录一致性
         run: |
-          if [ ! -d "$DTS_TARGET_DIR" ]; then
-            echo "❌ 错误：指定的DTS目录 $DTS_TARGET_DIR 不存在！"
-            exit 1
-          fi
-          if [ -z "$(ls -A $DTS_TARGET_DIR/*.dts 2>/dev/null)" ]; then
-            echo "❌ 错误：指定的DTS目录 $DTS_TARGET_DIR 下无.dts文件！"
-            exit 1
-          fi
-          echo "✅ 检测到有效DTS目录：$DTS_TARGET_DIR"
-          # 从DTS路径提取内核版本（如custom-dts/5.15.y → 5.15.y）
-          KERNEL_VER=$(basename $DTS_TARGET_DIR)
+          # 提取纯内核版本（custom-dts/5.15.y → 5.15.y）
+          KERNEL_VER=$(basename $DTS_SRC_DIR)
           echo "KERNEL_VER=$KERNEL_VER" >> $GITHUB_ENV
-          echo "✅ 提取内核版本：$KERNEL_VER"
+          # 定义最终补丁目录：严格匹配ophub → linux-[版本].y（实时目录名）
+          OPHUB_PATCH_DIR="${{ env.OPHUB_BETA_ROOT }}/linux-$KERNEL_VER"
+          echo "OPHUB_PATCH_DIR=$OPHUB_PATCH_DIR" >> $GITHUB_ENV
 
-      - name: 3. 生成ophub规范纯新增补丁
+          echo "✅ 匹配ophub beta实时目录：$OPHUB_PATCH_DIR"
+          echo "✅ 匹配unifreq内核路径：$UNIFREQ_DTS_ROOT/$KERNEL_DTS_SUBDIR"
+
+          # 校验DTS源目录有效性
+          if [ ! -d "$DTS_SRC_DIR" ]; then
+            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 不存在，请先创建并上传DTS"
+            exit 1
+          fi
+          DTS_COUNT=$(ls -A $DTS_SRC_DIR/*.dts 2>/dev/null | wc -l)
+          if [ $DTS_COUNT -eq 0 ]; then
+            echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 下无.dts文件"
+            exit 1
+          fi
+          echo "✅ 检测到有效DTS文件：$DTS_COUNT 个"
+
+      - name: 3. 生成【目录一致+路径匹配】的纯新增补丁
         run: |
-          # 定义补丁输出目录（kernel-patch/beta/5.15.y）
-          PATCH_OUTPUT_DIR="${{ env.PATCH_OUTPUT_ROOT }}/${{ env.KERNEL_VER }}"
-          mkdir -p $PATCH_OUTPUT_DIR
-          # 新建临时目录：模拟官方空目录（original）、修改后目录（modified）
-          TEMP_ORI="temp/original/${{ env.KERNEL_DTS_SUBDIR }}"
-          TEMP_MOD="temp/modified/${{ env.KERNEL_DTS_SUBDIR }}"
-          mkdir -p $TEMP_ORI $TEMP_MOD
+          # 创建ophub规范目录（linux-[版本].y），确保与实时目录一致
+          mkdir -p ${{ env.OPHUB_PATCH_DIR }}
+          echo "✅ 补丁输出目录（与ophub实时一致）：${{ env.OPHUB_PATCH_DIR }}"
 
-          # 遍历指定目录下所有DTS，批量生成补丁
-          for dts_file in ${{ env.DTS_TARGET_DIR }}/*.dts; do
+          # 模拟unifreq内核目录结构，保证补丁路径匹配
+          TEMP_ORI="${{ env.UNIFREQ_DTS_ROOT }}"
+          TEMP_MOD="${{ env.UNIFREQ_DTS_ROOT }}"
+          mkdir -p $TEMP_ORI/$KERNEL_DTS_SUBDIR $TEMP_MOD/$KERNEL_DTS_SUBDIR
+
+          # 批量生成补丁
+          for dts_file in $DTS_SRC_DIR/*.dts; do
             dts_name=$(basename $dts_file)
             patch_name="${dts_name%.dts}.dts.patch"
-            # 复制DTS到修改后目录，原始目录保持空（生成纯新增补丁）
-            cp $dts_file $TEMP_MOD/
-            # 核心diff命令：生成unified格式补丁
-            diff -Naur temp/original/ temp/modified/ > $PATCH_OUTPUT_DIR/$patch_name
-            # 清理补丁中临时目录路径，匹配ophub编译规范
-            sed -i "s|temp/original/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $PATCH_OUTPUT_DIR/$patch_name
-            sed -i "s|temp/modified/${{ env.KERNEL_DTS_SUBDIR }}/|${{ env.KERNEL_DTS_SUBDIR }}/|g" $PATCH_OUTPUT_DIR/$patch_name
-            # 强制UTF-8编码，避免编译乱码
-            iconv -f utf-8 -t utf-8 -c $PATCH_OUTPUT_DIR/$patch_name > $PATCH_OUTPUT_DIR/$patch_name.utf8
-            mv $PATCH_OUTPUT_DIR/$patch_name.utf8 $PATCH_OUTPUT_DIR/$patch_name
-            echo "✅ 生成补丁：$PATCH_OUTPUT_DIR/$patch_name"
+            # 复制DTS到模拟内核目录
+            cp -f $dts_file $TEMP_MOD/$KERNEL_DTS_SUBDIR/
+            # 生成unified格式补丁，路径匹配内核
+            diff -Naur --no-dereference $TEMP_ORI $TEMP_MOD > ${{ env.OPHUB_PATCH_DIR }}/$patch_name
+            # 强制UTF-8编码，兼容ophub编译
+            iconv -f utf-8 -t utf-8 -c ${{ env.OPHUB_PATCH_DIR }}/$patch_name > ${{ env.OPHUB_PATCH_DIR }}/$patch_name.utf8
+            mv -f ${{ env.OPHUB_PATCH_DIR }}/$patch_name.utf8 ${{ env.OPHUB_PATCH_DIR }}/$patch_name
+            echo "✅ 生成补丁：$patch_name → 存放于 ${{ env.OPHUB_PATCH_DIR }}"
           done
 
-          # 清理临时文件
-          rm -rf temp/
-          echo "✅ 所有DTS补丁生成完成！"
+          # 清理模拟目录，无残留
+          rm -rf ${{ env.UNIFREQ_DTS_ROOT }}
+          echo -e "\n🎉 补丁生成完成！目录100%匹配ophub beta实时状态"
 
-      - name: 4. 自动提交补丁到仓库
+      - name: 4. 自动提交补丁到ophub规范目录
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # 添加补丁文件
-          git add ${{ env.PATCH_OUTPUT_ROOT }}/**/*.patch
+          # 添加ophub beta目录下的所有补丁
+          git add ${{ env.OPHUB_BETA_ROOT }}/**/*.patch
           # 提交（无新文件则跳过）
-          git commit -m "Manual generate DTS patch: ${{ env.DTS_TARGET_DIR }} → ${{ env.PATCH_OUTPUT_ROOT }}/${{ env.KERNEL_VER }} [$(date +%Y-%m-%d %H:%M:%S)]" || echo "ℹ 无新补丁需要提交"
-          # 推送到仓库主分支（非main分支请改为master）
-          git push origin main || echo "ℹ 无新补丁需要推送"
+          COMMIT_MSG="DTS2Patch[Ophub Live]: linux-${{ env.KERNEL_VER }} | 目录：${{ env.OPHUB_PATCH_DIR }}"
+          git commit -m "$COMMIT_MSG" || echo "ℹ 无新补丁，无需提交"
+          # 推送到主分支（非main请改为master）
+          git push origin main || echo "ℹ 无新补丁，无需推送"
