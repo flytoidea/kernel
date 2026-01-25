@@ -2,8 +2,6 @@
 name: 自动转换设备树补丁
 on:
   workflow_dispatch:  # 手动触发
-#  schedule:
- #   - cron: '0 0 * * *'  # 每天自动运行一次
 
 # 权限
 permissions:
@@ -66,18 +64,14 @@ jobs:
               device_series=$(echo "$dts_name" | cut -d'-' -f1)
             fi
             
-            echo "🔍 设备系列: $device_series"
-            
             # 查找Makefile中该设备系列的最后一个条目
             local line_num=$(grep -n "+=.*$device_series" "$makefile" | tail -1 | cut -d':' -f1)
             
             if [ -n "$line_num" ]; then
-              echo "✅ 找到插入位置: 第 $line_num 行"
               echo "$line_num"
             else
               # 如果没找到，在Makefile末尾添加
               local total_lines=$(wc -l < "$makefile")
-              echo "⚠️  未找到设备系列，将在末尾添加 (第 $total_lines 行)"
               echo "$total_lines"
             fi
           }
@@ -94,6 +88,9 @@ jobs:
             local subdir_name=$(basename "$subdir")
             local dts_name=$(basename "$dts_file" .dts)
             local dts_base=$(basename "$dts_file")
+            
+            echo "    🔧 处理: $(basename "$dts_file")"
+            echo "      🔍 设备系列: $(echo "$dts_name" | grep -o '^[a-zA-Z0-9]*-[a-zA-Z0-9]*' | cut -d'-' -f1 || echo "$dts_name" | cut -d'-' -f1)"
             
             # 补丁输出目录
             local patch_output_dir="${{ github.workspace }}/kernel-patch/beta/$kernel_name"
@@ -113,73 +110,51 @@ jobs:
             
             # 计算Makefile插入位置
             local insert_line=$(find_makefile_insertion_point "$makefile_path" "$dts_name")
+            echo "      ✅ 找到插入位置: 第 $insert_line 行"
             
             # 计算行数
             local dts_line_count=$(wc -l < "$dts_file")
             local makefile_line_count=$(wc -l < "$makefile_path")
             
-            # 生成完整的git补丁
-            {
-              # Git补丁头
-              echo "From $(date +%s | sha1sum | cut -c1-40) Mon Sep 17 00:00:00 2001"
-              echo "From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
-              echo "Date: $(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
-              echo "Subject: [PATCH] Add $dts_name"
-              echo ""
-              echo "---"
-              echo " arch/arm64/boot/dts/$subdir_name/Makefile        |   1 +"
-              echo " arch/arm64/boot/dts/$subdir_name/$dts_base      |   $dts_line_count +"
-              echo " 2 files changed, $((dts_line_count + 1)) insertions(+)"
-              echo " create mode 100644 arch/arm64/boot/dts/$subdir_name/$dts_base"
-              echo ""
-              echo "diff --git a/arch/arm64/boot/dts/$subdir_name/Makefile b/arch/arm64/boot/dts/$subdir_name/Makefile"
-              echo "index $(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7) 100644"
-              echo "--- a/arch/arm64/boot/dts/$subdir_name/Makefile"
-              echo "+++ b/arch/arm64/boot/dts/$subdir_name/Makefile"
-              
-              # 生成Makefile的diff
-              echo "@@ -$insert_line,$((makefile_line_count - insert_line + 1)) +$insert_line,$((makefile_line_count - insert_line + 2)) @@"
-              
-              # 读取Makefile并生成diff
-              awk -v insert_line="$insert_line" -v dts_name="$dts_name" '
-                NR == insert_line {
-                  print $0
-                  printf("+dtb-$(CONFIG_ARCH_%s) += %s.dtb\n", toupper(substr(dts_name, 1, 1)) substr(dts_name, 2), dts_name)
-                  next
-                }
-                { print $0 }
-              ' "$makefile_path" | awk '{
-                if (NR == '$insert_line' + 1) {
-                  printf("+%s\n", $0)
-                } else {
-                  printf(" %s\n", $0)
-                }
-              }'
-              
-              echo ""
-              echo "diff --git a/arch/arm64/boot/dts/$subdir_name/$dts_base b/arch/arm64/boot/dts/$subdir_name/$dts_base"
-              echo "new file mode 100644"
-              echo "index 000000000..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)"
-              echo "--- /dev/null"
-              echo "+++ b/arch/arm64/boot/dts/$subdir_name/$dts_base"
-              echo "@@ -0,0 +1,$dts_line_count @@"
-              
-              # 添加DTS内容
-              while IFS= read -r line; do
-                echo "+$line"
-              done < "$dts_file"
-              
-            } > "$patch_path"
+            # 生成补丁内容
+            cat > "$patch_path" <<EOF
+From $(date +%s | sha1sum | cut -c1-40) Mon Sep 17 00:00:00 2001
+From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date: $(date -u '+%a, %d %b %Y %H:%M:%S +0000')
+Subject: [PATCH] Add $dts_name
+
+---
+ arch/arm64/boot/dts/$subdir_name/Makefile        |   1 +
+ arch/arm64/boot/dts/$subdir_name/$dts_base      |   $dts_line_count +
+ 2 files changed, $((dts_line_count + 1)) insertions(+)
+ create mode 100644 arch/arm64/boot/dts/$subdir_name/$dts_base
+
+diff --git a/arch/arm64/boot/dts/$subdir_name/Makefile b/arch/arm64/boot/dts/$subdir_name/Makefile
+index $(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7) 100644
+--- a/arch/arm64/boot/dts/$subdir_name/Makefile
++++ b/arch/arm64/boot/dts/$subdir_name/Makefile
+@@ -$insert_line,0 +$insert_line,1 @@
++dtb-\$(CONFIG_ARCH_$(echo $subdir_name | tr '[:lower:]' '[:upper:]')) += $dts_name.dtb
+diff --git a/arch/arm64/boot/dts/$subdir_name/$dts_base b/arch/arm64/boot/dts/$subdir_name/$dts_base
+new file mode 100644
+index 000000000..$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' ' | cut -c1-7)
+--- /dev/null
++++ b/arch/arm64/boot/dts/$subdir_name/$dts_base
+@@ -0,0 +1,$dts_line_count @@
+EOF
             
-            echo "✅ 生成补丁 [$patch_number]: $patch_filename"
-            echo "   位置: $patch_output_dir/"
-            echo "   设备: $dts_name"
+            # 添加DTS内容
+            while IFS= read -r line; do
+              echo "+$line" >> "$patch_path"
+            done < "$dts_file"
+            
+            echo "      ✅ 生成补丁 [$patch_number]: $patch_filename"
             
             # 验证补丁
             if [ -s "$patch_path" ]; then
-              echo "   状态: ✅ 补丁有效 ($(wc -l < "$patch_path") 行)"
+              echo "      📊 补丁大小: $(wc -l < "$patch_path") 行"
             else
-              echo "   状态: ❌ 补丁生成失败"
+              echo "      ❌ 补丁生成失败"
               return 1
             fi
           }
@@ -226,8 +201,6 @@ jobs:
               # 为每个DTS文件生成补丁，编号从301开始
               local_patch_number=301
               for dts_file in "${sorted_dts_files[@]}"; do
-                echo "    🔧 处理: $(basename "$dts_file")"
-                
                 if generate_patch "$kernel_dir" "$subdir" "$dts_file" "$local_patch_number" "$dts_count"; then
                   SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
                 else
