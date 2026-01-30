@@ -1,5 +1,3 @@
-# 手动触发 | 自动生成完整设备树补丁（Makefile + DTS）
-# 适配ophub官方kernel编译Action：kernel-patch/beta/[linux-xxx.y]/ 路径规范
 name: 生成设备树补丁
 on:
   workflow_dispatch:
