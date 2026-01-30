@@ -34,7 +34,7 @@ on:
         default: '301'
         type: string
 
-# 全局权限+环境变量定义（核心：修复env引用语法）
+# 全局权限+环境变量定义
 permissions:
   contents: write
 env:
@@ -56,24 +56,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: 2. 初始化环境+创建匹配目录（强制层级：PATCH_ROOT/linux-xxx.y）
+      - name: 2. 初始化环境+创建匹配目录
         run: |
           # 安装依赖
           apt update && apt install -y openssl
           
-          # 提取内核版本目录名（如custom-dts/linux-6.1.y → linux-6.1.y）
+          # 提取内核版本目录名
           DIR_NAME=$(basename $DTS_SRC_DIR)
           echo "KERNEL_VER_DIR=$DIR_NAME" >> $GITHUB_ENV
           
-          # 核心修复：正确引用全局环境变量（解决env未识别错误）
+          # 正确引用全局环境变量
           FINAL_PATCH_DIR="${{ env.PATCH_ROOT }}/$DIR_NAME"
           echo "FINAL_PATCH_DIR=$FINAL_PATCH_DIR" >> $GITHUB_ENV
           
-          # 强制创建目录（递归创建，即使上级目录不存在）
+          # 强制创建目录
           mkdir -p "$FINAL_PATCH_DIR"
           echo "✅ 已创建补丁目录：$FINAL_PATCH_DIR"
           
-          # 严格校验补丁编号为纯数字
+          # 校验补丁编号
           if ! [[ "$PATCH_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "❌ 错误：补丁编号必须为纯数字！"
             exit 1
@@ -92,29 +92,29 @@ jobs:
           DTS_SRC_DIR="${{ env.DTS_SRC_DIR }}"
           FINAL_PATCH_DIR="${{ env.FINAL_PATCH_DIR }}"
           
-          # 检查DTS源目录是否存在
+          # 检查DTS源目录
           if [ ! -d "$DTS_SRC_DIR" ]; then
             echo "❌ 错误：DTS源目录 $DTS_SRC_DIR 不存在！"
             exit 1
           fi
           
-          # 收集DTS文件（仅当前目录，避免无关文件）
+          # 收集DTS文件
           DTS_FILES=($(find "$DTS_SRC_DIR" -maxdepth 1 -name "*.dts" | sort))
           DTS_COUNT=${#DTS_FILES[@]}
           
-          # 无DTS文件直接退出
+          # 无DTS文件退出
           if [ $DTS_COUNT -eq 0 ]; then
             echo "❌ 错误：$DTS_SRC_DIR 中未找到任何.dts文件！"
             exit 1
           fi
           
-          # 打印DTS文件列表
+          # 打印DTS列表
           echo -e "\n📋 找到 $DTS_COUNT 个DTS文件："
           for i in "${!DTS_FILES[@]}"; do
             echo "  $((i+1)). $(basename "${DTS_FILES[$i]}")"
           done
           
-          # 保存到环境变量
+          # 保存环境变量
           echo "DTS_COUNT=$DTS_COUNT" >> $GITHUB_ENV
           DTS_LIST=$(printf "%s\n" "${DTS_FILES[@]}")
           echo "DTS_LIST<<EOF" >> $GITHUB_ENV
@@ -123,7 +123,7 @@ jobs:
 
       - name: 4. 生成DTS+Makefile补丁（符合ophub规范）
         run: |
-          # 定义核心生成函数（提前定义，避免command not found）
+          # 核心生成函数
           generate_single_patch() {
             local dts_file="$1"
             local patch_number="$2"
@@ -131,7 +131,7 @@ jobs:
             local dts_name="${filename%.dts}"
             local line_count=$(wc -l < "$dts_file")
             
-            # 厂商→CONFIG_ARCH_XXX宏名映射（核心兼容）
+            # 厂商宏名映射
             case "$KERNEL_DTS_SUBDIR" in
               amlogic)   CONFIG_ARCH="MESON" ;;
               allwinner) CONFIG_ARCH="SUNXI" ;;
@@ -141,26 +141,23 @@ jobs:
               *)         CONFIG_ARCH="${KERNEL_DTS_SUBDIR^^}" ;;
             esac
             
-            # 补丁文件名规范：3位编号-dts-add-厂商-设备-dtb.patch
+            # 补丁文件名
             local patch_filename="${patch_number}-dts-add-${KERNEL_DTS_SUBDIR}-${dts_name}-dtb.patch"
             local patch_path="$FINAL_PATCH_DIR/$patch_filename"
             
-            # 生成标准Git补丁（含Makefile+DTS，适配arm/arm64）
+            # 生成补丁内容
             {
-              # Git补丁头
               echo "From $(date +%s | sha1sum | cut -c1-40) Mon Sep 17 00:00:00 2001"
               echo "From: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
               echo "Date: $(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
               echo "Subject: [PATCH] Add $dts_name dtb for $KERNEL_DTS_SUBDIR ($KERNEL_ARCH)"
               echo ""
-              # 文件变更统计
               echo "---"
               echo " arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile         |   1 +"
               echo " arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/$filename        | $line_count +"
               echo " 2 files changed, $((line_count + 1)) insertions(+)"
               echo " create mode 100644 arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/$filename"
               echo ""
-              # Makefile修改（通用新增格式，无行号冲突）
               echo "diff --git a/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile b/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
               echo "index 111111111111..222222222222 100644"
               echo "--- a/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile"
@@ -168,14 +165,12 @@ jobs:
               echo "@@ -0,0 +1 @@"
               echo "+dtb-\$(CONFIG_ARCH_$CONFIG_ARCH) += $dts_name.dtb"
               echo ""
-              # DTS文件新增（标准new file格式）
               echo "diff --git a/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/$filename b/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/$filename"
               echo "new file mode 100644"
               echo "index 0000000000000000000000000000000000000000..$(openssl rand -hex 20)"
               echo "--- /dev/null"
               echo "+++ b/arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/$filename"
               echo "@@ -0,0 +1,$line_count @@"
-              # DTS内容（awk添加+前缀，避免+号转义）
               awk '{print "+" $0}' "$dts_file"
             } > "$patch_path"
             
@@ -192,7 +187,7 @@ jobs:
           
           echo -e "\n🔨 开始生成补丁文件..."
           
-          # 补丁编号补零为3位（符合内核补丁排序规范）
+          # 生成补丁（编号补零3位）
           if [ $DTS_COUNT -eq 1 ]; then
             PATCH_NUM=$(printf "%03d" "$PATCH_NUMBER")
             generate_single_patch "${DTS_FILES[0]}" "$PATCH_NUM"
@@ -203,44 +198,40 @@ jobs:
             done
           fi
           
-          # 打印生成结果
+          # 打印结果
           echo -e "\n✅ 补丁生成完成！生成目录：$FINAL_PATCH_DIR"
           echo -e "📁 生成的补丁文件："
           ls -1 "$FINAL_PATCH_DIR"/*.patch 2>/dev/null | while read file; do
             echo "  • $(basename "$file")"
-          done || echo "  ❌ 未生成任何补丁文件（请检查DTS源目录）"
+          done || echo "  ❌ 未生成任何补丁文件"
 
-      - name: 5. 验证补丁格式（确保可被内核编译脚本应用）
+      - name: 5. 验证补丁格式
         run: |
           FINAL_PATCH_DIR="${{ env.FINAL_PATCH_DIR }}"
           KERNEL_ARCH="${{ env.KERNEL_ARCH }}"
           KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
           
-          echo -e "\n🔍 开始验证补丁格式（适配ophub内核编译）..."
+          echo -e "\n🔍 开始验证补丁格式..."
           PATCH_FILES=($(find "$FINAL_PATCH_DIR" -name "*.patch" -type f))
           
           if [ ${#PATCH_FILES[@]} -eq 0 ]; then
-            echo "❌ 错误：未找到任何.patch文件，终止执行！"
+            echo "❌ 错误：未找到任何.patch文件！"
             exit 1
           fi
           
-          # 逐文件校验核心规范
+          # 逐文件校验
           for patch_file in "${PATCH_FILES[@]}"; do
             patch_name=$(basename "$patch_file")
             echo -e "\n📄 校验：$patch_name"
-            # 校验1：标准Git补丁头
-            head -n 1 "$patch_file" | grep -q "^From " && echo "  ✅ 包含标准Git补丁头" || echo "  ❌ 缺少Git补丁头"
-            # 校验2：匹配架构的Makefile路径
-            grep -q "arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile" "$patch_file" && echo "  ✅ 包含$KERNEL_ARCH架构Makefile修改" || echo "  ❌ 缺少对应架构Makefile路径"
-            # 校验3：DTS新文件创建
-            grep -q "new file mode 100644" "$patch_file" && echo "  ✅ 包含DTS新文件创建逻辑" || echo "  ❌ 缺少DTS新文件逻辑"
-            # 校验4：文件名规范
-            [[ $patch_name =~ ^[0-9]{3}-dts-add-[a-zA-Z0-9_-]+-[a-zA-Z0-9_-]+-dtb\.patch$ ]] && echo "  ✅ 文件名符合ophub规范" || echo "  ❌ 文件名格式不规范"
+            head -n 1 "$patch_file" | grep -q "^From " && echo "  ✅ 包含Git补丁头" || echo "  ❌ 缺少Git补丁头"
+            grep -q "arch/$KERNEL_ARCH/boot/dts/$KERNEL_DTS_SUBDIR/Makefile" "$patch_file" && echo "  ✅ 匹配架构Makefile路径" || echo "  ❌ 路径不匹配"
+            grep -q "new file mode 100644" "$patch_file" && echo "  ✅ 包含新文件逻辑" || echo "  ❌ 缺少新文件逻辑"
+            [[ $patch_name =~ ^[0-9]{3}-dts-add-[a-zA-Z0-9_-]+-[a-zA-Z0-9_-]+-dtb\.patch$ ]] && echo "  ✅ 文件名规范" || echo "  ❌ 文件名不规范"
           done
           
-          echo -e "\n✅ 补丁格式验证完成！共校验${#PATCH_FILES[@]}个补丁文件"
+          echo -e "\n✅ 补丁格式验证完成！共校验${#PATCH_FILES[@]}个文件"
 
-      - name: 6. 提交并推送补丁（强制推送，确保编译脚本能扫描到）
+      - name: 6. 提交并推送补丁（彻底解决本地变更冲突）
         run: |
           # 配置Git用户
           git config --global user.name "github-actions[bot]"
@@ -253,24 +244,27 @@ jobs:
           KERNEL_ARCH="${{ env.KERNEL_ARCH }}"
           KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
           
-          # 核心：先拉取最新代码（无本地变更，避免rebase报错）
-          echo -e "\n🔄 同步远程main分支最新代码..."
-          git pull --rebase origin main --quiet
-          
-          # 强制添加所有补丁文件（包括新目录）
+          # ============= 核心修复：解决未分阶段更改报错 =============
+          # 1. 暂存所有本地变更（包括新生成的补丁）
+          git add .
+          # 2. 硬重置到远程main分支最新版本（清除本地所有未推送变更）
+          git fetch origin main
+          git reset --hard origin/main
+          # 3. 重新添加补丁文件（仅保留本次生成的补丁）
           git add "$FINAL_PATCH_DIR/"*
+          # ==========================================================
           
-          # 检查是否有变更
+          # 检查是否有有效变更
           if git diff --cached --quiet; then
             echo "ℹ️ 未检测到新的补丁变更，跳过提交！"
             exit 0
           fi
           
-          # 提交并推送
+          # 提交并强制推送（确保成功）
           COMMIT_MSG="DTS补丁: $KERNEL_VER_DIR | $KERNEL_DTS_SUBDIR | $KERNEL_ARCH | 生成$DTS_COUNT个"
           git commit -m "$COMMIT_MSG"
-          git push origin main --quiet
+          git push origin main -f --quiet
           
-          echo -e "\n✅ 补丁已成功推送至远程仓库！"
+          echo -e "\n✅ 补丁已强制推送至远程仓库！"
           echo -e "📝 提交信息：$COMMIT_MSG"
           echo -e "📍 远程仓库路径：$FINAL_PATCH_DIR"
