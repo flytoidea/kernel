@@ -1,5 +1,5 @@
 # 手动触发 | 自动生成完整设备树补丁（Makefile + DTS）
-name: 生成完整DTS补丁
+name: 生成设备数补丁
 on:
   workflow_dispatch:
     inputs:
@@ -24,7 +24,7 @@ on:
           - arm
           - arm64
       kernel_dts_subdir:
-        description: '内核DTS子目录（如rockchip、amlogic）'
+        description: '内核DTB子目录（如rockchip、amlogic）'
         required: true
         default: 'rockchip'
         type: string
