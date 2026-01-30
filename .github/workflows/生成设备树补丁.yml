@@ -271,32 +271,38 @@ jobs:
 
       - name: 6. 提交并推送补丁到仓库
         run: |
+          # 配置Git用户信息
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
+          # 读取环境变量
           OPHUB_PATCH_DIR="${{ env.OPHUB_PATCH_DIR }}"
           DIR_NAME="${{ env.DIR_NAME }}"
           DTS_COUNT="${{ env.DTS_COUNT }}"
           KERNEL_DTS_SUBDIR="${{ env.KERNEL_DTS_SUBDIR }}"
+          KERNEL_ARCH="${{ env.KERNEL_ARCH }}"
           
-          # 添加补丁文件
+          # 核心修复：先拉取远程最新代码（此时本地无未提交变更，无rebase报错）
+          echo "🔄 同步远程main分支最新代码..."
+          git pull --rebase origin main --quiet
+          echo "✅ 远程代码同步完成"
+          
+          # 再将补丁文件加入暂存区
           git add "$OPHUB_PATCH_DIR"/*.patch
           
-          # 检查是否有变更
+          # 检查是否有实际的文件变更，无变更则跳过提交
           if git diff --cached --quiet; then
-            echo "ℹ️ 无新的补丁文件变更，无需提交"
+            echo "ℹ️ 未检测到新的补丁文件变更，跳过提交"
             exit 0
           fi
           
-          # 拉取最新代码，避免推送冲突（修复潜在Bug）
-          git pull --rebase origin main --quiet
-          
-          # 提交代码
+          # 构造提交信息并提交
           COMMIT_MSG="DTS补丁: $DIR_NAME | $KERNEL_DTS_SUBDIR | 架构:$KERNEL_ARCH | 生成$DTS_COUNT个文件"
           git commit -m "$COMMIT_MSG"
           
-          # 推送代码
+          # 推送提交到远程main分支
           git push origin main --quiet
           
           echo "✅ 补丁已成功提交并推送到main分支！"
-          echo "📝 提交信息: $COMMIT_MSG"
+          echo "📝 提交信息：$COMMIT_MSG"
+          echo "📂 补丁存放目录：$OPHUB_PATCH_DIR"
