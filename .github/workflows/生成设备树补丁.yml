@@ -1,3 +1,5 @@
+# 手动触发 | 自动生成完整设备树补丁（Makefile + DTS）
+# 适配ophub官方kernel编译Action：kernel-patch/beta/[linux-xxx.y]/ 路径规范
 name: 生成设备树补丁
 on:
   workflow_dispatch:
@@ -22,7 +24,7 @@ on:
           - arm
           - arm64
       kernel_dts_subdir:
-        description: '内核DTB子目录（如rockchip、amlogic）'
+        description: '内核DTS子目录（如rockchip、amlogic）'
         required: true
         default: 'rockchip'
         type: string
@@ -32,11 +34,10 @@ on:
         default: '301'
         type: string
 
+# 全局权限+环境变量定义（核心：修复env引用语法）
 permissions:
-  contents: write  # 强制写权限，确保补丁推送
-
+  contents: write
 env:
-  # 核心：与ophub编译Action的kernel_patch路径完全一致
   PATCH_ROOT: 'kernel-patch/beta'
 
 jobs:
@@ -47,7 +48,6 @@ jobs:
       KERNEL_ARCH: ${{ github.event.inputs.kernel_arch }}
       KERNEL_DTS_SUBDIR: ${{ github.event.inputs.kernel_dts_subdir }}
       PATCH_NUMBER: ${{ github.event.inputs.patch_number }}
-      PATCH_ROOT: ${{ env.PATCH_ROOT }}
 
     steps:
       - name: 1. 拉取仓库最新代码（全量拉取，无深度限制）
@@ -65,7 +65,7 @@ jobs:
           DIR_NAME=$(basename $DTS_SRC_DIR)
           echo "KERNEL_VER_DIR=$DIR_NAME" >> $GITHUB_ENV
           
-          # 核心路径：kernel-patch/beta/[linux-xxx.y]（严格匹配ophub扫描规则）
+          # 核心修复：正确引用全局环境变量（解决env未识别错误）
           FINAL_PATCH_DIR="${{ env.PATCH_ROOT }}/$DIR_NAME"
           echo "FINAL_PATCH_DIR=$FINAL_PATCH_DIR" >> $GITHUB_ENV
           
@@ -266,7 +266,7 @@ jobs:
             exit 0
           fi
           
-          # 提交并强制推送（确保补丁推送到远程）
+          # 提交并推送
           COMMIT_MSG="DTS补丁: $KERNEL_VER_DIR | $KERNEL_DTS_SUBDIR | $KERNEL_ARCH | 生成$DTS_COUNT个"
           git commit -m "$COMMIT_MSG"
           git push origin main --quiet
