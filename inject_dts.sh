@@ -25,14 +25,14 @@ DTS_SOURCE_ROOT="${PWD}/custom-dts"
 #       目标目录是相对于内核源码的（容器内路径）
 DTS_CONFIGS=(
     # Rockchip系列
-    "rockchip:arch/arm64/boot/dts/rockchip"
+    "linux-6.1.y/arm64/rockchip :arch/arm64/boot/dts/rockchip"
     
     # Amlogic系列
-    "amlogic:arch/arm64/boot/dts/amlogic"
+    #"amlogic:arch/arm64/boot/dts/amlogic"
     
     # Allwinner系列
-    "allwinner:arch/arm/boot/dts"
-    "allwinner64:arch/arm64/boot/dts/allwinner"
+    #"allwinner:arch/arm/boot/dts"
+    #"allwinner64:arch/arm64/boot/dts/allwinner"
     
     # 更多SOC类型可以继续添加...
     # "your_soc_source:your_target_path"
