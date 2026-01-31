@@ -59,10 +59,12 @@ DTS_SOURCE_ROOT="${current_path}/custom-dts"
 # DTS配置数组 - 每个条目定义一个需要处理的目录
 DTS_CONFIGS=(
     # 示例格式: "源目录名:目标目录路径"
-    "rockchip:arch/arm64/boot/dts/rockchip"
-    "amlogic:arch/arm64/boot/dts/amlogic"
-    "allwinner:arch/arm/boot/dts"
-    "allwinner64:arch/arm64/boot/dts/allwinner"
+
+    
+    "arm64/rockchip:arch/arm64/boot/dts/rockchip"
+    #"amlogic:arch/arm64/boot/dts/amlogic"
+    #"allwinner:arch/arm/boot/dts"
+    #"allwinner64:arch/arm64/boot/dts/allwinner"
     
     # 您可以在这里添加更多配置，每行一个
     # "your_soc_source:your_target_path"
