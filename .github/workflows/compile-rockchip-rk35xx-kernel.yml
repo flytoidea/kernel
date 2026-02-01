@@ -16,6 +16,7 @@ on:
         default: "unifreq/linux-6.1.y-rockchip"
         type: choice
         options:
+          - flytoidea/linux-6.1.y-rockchip
           - unifreq/linux-6.1.y-rockchip
           - unifreq/linux-5.10.y-rk35xx
           - ophub/linux-6.1.y-rockchip
