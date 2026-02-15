@@ -13,7 +13,7 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "unifreq/linux-6.1.y-rockchip"
+        default: "flytoidea/linux-6.1.y-rockchip"
         type: choice
         options:
           - flytoidea/linux-6.1.y-rockchip
@@ -39,7 +39,7 @@ on:
       kernel_package:
         description: "Select compile package list"
         required: false
-        default: "all"
+        default: "dtbs"
         type: choice
         options:
           - all
