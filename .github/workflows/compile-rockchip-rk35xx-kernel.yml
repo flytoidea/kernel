@@ -13,9 +13,10 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "flytoidea/linux-6.1.y-rockchip"
+        default: "flytoidea/linux-6.12.y"
         type: choice
         options:
+          - flytoidea/linux-6.12.y
           - flytoidea/linux-6.1.y-rockchip
           - unifreq/linux-6.1.y-rockchip
           - unifreq/linux-5.10.y-rk35xx
