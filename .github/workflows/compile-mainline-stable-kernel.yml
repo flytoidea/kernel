@@ -38,7 +38,7 @@ on:
       delete_source:
         description: "Delete source after compilation"
         required: false
-        default: true
+        default: false  # 【修改1】默认不删除源码，用于缓存
         type: boolean
       kernel_package:
         description: "Select compile package list"
@@ -62,7 +62,7 @@ on:
       ccache_clear:
         description: "Set whether to clear the cache"
         required: false
-        default: false
+        default: false  # 【默认保留】不清理ccache缓存
         type: boolean
       docker_image:
         description: "Select Armbian docker image"
@@ -173,6 +173,15 @@ jobs:
           echo "source_hash=${source_hash}" >> ${GITHUB_ENV}
           echo "status=success" >> ${GITHUB_OUTPUT}
 
+      # 【新增核心步骤】缓存内核源码（跳过重复下载）
+      - name: Cache kernel source
+        uses: actions/cache@v4
+        with:
+          path: /builder/source  # 源码存放路径（与编译步骤的docker路径对齐）
+          key: kernel-source-${{ inputs.kernel_source }}-${{ inputs.kernel_version }}-${{ env.source_hash }}
+          restore-keys: |
+            kernel-source-${{ inputs.kernel_source }}-${{ inputs.kernel_version }}-
+
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -189,7 +198,7 @@ jobs:
           kernel_source: ${{ inputs.kernel_source }}
           kernel_version: ${{ inputs.kernel_version }}
           kernel_auto: ${{ inputs.kernel_auto }}
-          delete_source: ${{ inputs.delete_source }}
+          delete_source: ${{ inputs.delete_source }}  # 用修改后的默认值（false）
           kernel_package: ${{ inputs.kernel_package }}
           kernel_toolchain: ${{ inputs.kernel_toolchain }}
           kernel_sign: ${{ inputs.kernel_sign }}
