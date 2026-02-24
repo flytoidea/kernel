@@ -13,30 +13,29 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "flytoidea"
+        default: "flytoidea/linux-6.12.y"
         type: choice
         options:
-          - flytoidea
-          - unifreq
-          - ophub
+          - flytoidea/linux-6.12.y
+          - flytoidea/linux-6.1.y
+          - flytoidea/linux-5.15.y
+          - flytoidea/linux-5.10.y
+          - unifreq/linux-6.1.y
+          - unifreq/linux-5.10.y
+          - ophub/linux-6.1.y
+          - ophub/linux-5.10.y
       kernel_version:
         description: "Select kernel version"
         required: false
         default: "6.12.y"
         type: choice
         options:
-          - 5.10.y
-          - 5.15.y
-          - 6.1.y
-          - 6.6.y
           - 6.12.y
+          - 6.1.y
+          - 5.15.y
+          - 5.10.y
       kernel_auto:
         description: "Auto use the latest kernel"
-        required: false
-        default: true
-        type: boolean
-      delete_source:
-        description: "Delete source after compilation"
         required: false
         default: true
         type: boolean
@@ -126,7 +125,6 @@ jobs:
           sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
           sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-build-armbian-depends)
           sudo -E systemctl daemon-reload
-          #sudo -E apt-get -y full-upgrade
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
           sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
@@ -161,8 +159,12 @@ jobs:
       - name: Get kernel source hash
         id: kernelhash
         run: |
+          # 完全对齐rk35xx脚本的哈希获取逻辑（兼容带@分支的源码）
+          kernel_source="${{ inputs.kernel_source }}"
+          [[ "${kernel_source}" =~ @ ]] && kernel_branch="$(echo "${kernel_source}" | awk -F'@' '{print $2}')" || kernel_branch="main"
+
           # Get the latest source hash from the kernel repository
-          api_url="https://api.github.com/repos/${{ inputs.kernel_source }}/linux-${{ inputs.kernel_version }}/git/ref/heads/main"
+          api_url="https://api.github.com/repos/${{ inputs.kernel_source }}/git/ref/heads/${kernel_branch}"
           source_hash=$(curl -fsSL -m 20 \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -189,7 +191,6 @@ jobs:
           kernel_source: ${{ inputs.kernel_source }}
           kernel_version: ${{ inputs.kernel_version }}
           kernel_auto: ${{ inputs.kernel_auto }}
-          delete_source: ${{ inputs.delete_source }}
           kernel_package: ${{ inputs.kernel_package }}
           kernel_toolchain: ${{ inputs.kernel_toolchain }}
           kernel_sign: ${{ inputs.kernel_sign }}
@@ -198,25 +199,18 @@ jobs:
           docker_hostpath: /builder
           docker_image: ophub/armbian-${{ inputs.docker_image }}:arm64
 
-      # 【仅新增第1处】强制赋值环境变量，避免上传步骤因变量为空报错
-      - name: Set basic env vars
-        run: |
-          echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
-          echo "PACKAGED_OUTPUTPATH=/builder" >> $GITHUB_ENV
-
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
         with:
-          tag: kernel_stable 
+          tag: kernel_stable
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
           allowUpdates: true
           removeArtifacts: false
           replacesArtifacts: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
-          # 【仅新增第2处】允许无产物时不报错，避免exit code 1
-          artifactErrorsFailBuild: false
+          artifactErrorsFailBuild: false  # 仅保留这1处最小容错（和rk35xx脚本的隐性适配对齐）
           body: |
             - These are Mainline `stable` kernels that provide support for `Armbian`, `OpenWrt` and `FnNAS`.
             - It works with most `Amlogic`, `Rockchip`, and `Allwinner` devices. For specific details, please refer to the instructions on the homepage of each system's repository.
