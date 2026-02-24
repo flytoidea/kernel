@@ -13,9 +13,10 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "unifreq"
+        default: "flytoidea"
         type: choice
         options:
+          - flytoidea
           - unifreq
           - ophub
       kernel_version:
