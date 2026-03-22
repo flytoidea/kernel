@@ -1,0 +1,88 @@
+name: Build U-Boot for RK3568
+
+# 触发条件：可以手动触发，也可以在你推送代码时自动触发
+on:
+  workflow_dispatch:        # 允许手动触发
+    inputs:
+      u_boot_repo:
+        description: 'U-Boot 仓库地址 (默认主线)'
+        required: false
+        default: 'https://github.com/u-boot/u-boot.git'
+      u_boot_ref:
+        description: 'U-Boot 分支或标签 (如 v2025.01)'
+        required: false
+        default: 'v2025.01'
+      defconfig:
+        description: '使用的 defconfig (例如 rk3568_defconfig)'
+        required: false
+        default: 'rk3568_defconfig'
+      custom_dts:
+        description: '是否使用自定义设备树？(true/false)'
+        required: false
+        default: 'false'
+  push:
+    branches: [ "main" ]     # 也可以在你推送到 main 分支时自动构建
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout user repo (可选，用于存放自定义配置)
+        uses: actions/checkout@v4
+        with:
+          path: user-repo
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make gcc g++ libssl-dev device-tree-compiler \
+            python3 python3-dev python3-pip gcc-aarch64-linux-gnu
+
+      - name: Clone U-Boot source
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.u_boot_ref || 'v2025.01' }} \
+            ${{ github.event.inputs.u_boot_repo || 'https://github.com/u-boot/u-boot.git' }} u-boot
+
+      - name: Clone rkbin
+        run: |
+          git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
+
+      - name: Apply custom device tree or defconfig (如果用户提供了)
+        run: |
+          if [ -d user-repo/configs ] && [ "${{ github.event.inputs.custom_dts }}" == "true" ]; then
+            echo "应用自定义配置..."
+            # 例如：将用户仓库中的设备树文件复制到 u-boot/arch/arm/dts/
+            cp -v user-repo/dts/*.dts u-boot/arch/arm/dts/ 2>/dev/null || true
+            cp -v user-repo/dts/*.dtsi u-boot/arch/arm/dts/ 2>/dev/null || true
+            # 将用户 defconfig 复制到 u-boot/configs/
+            cp -v user-repo/configs/*_defconfig u-boot/configs/ 2>/dev/null || true
+          else
+            echo "使用默认配置"
+          fi
+
+      - name: Build U-Boot
+        run: |
+          cd u-boot
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export ARCH=arm64
+          # 设置 ROCKCHIP_TPL 指向正确的 DDR 初始化文件（请根据 rkbin 实际路径调整）
+          export ROCKCHIP_TPL=${{ github.workspace }}/rkbin/bin/rk35/rk3568_ddr_1560MHz_v1.21.bin
+          # 如果上面指定的 DDR bin 文件不存在，尝试自动查找最新版本
+          if [ ! -f "$ROCKCHIP_TPL" ]; then
+            export ROCKCHIP_TPL=$(ls ${{ github.workspace }}/rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
+          fi
+          echo "Using ROCKCHIP_TPL=$ROCKCHIP_TPL"
+          make ${{ github.event.inputs.defconfig || 'rk3568_defconfig' }}
+          make -j$(nproc)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: u-boot-rockchip-bin
+          path: |
+            u-boot/u-boot-rockchip.bin
+            u-boot/idbloader.img
+            u-boot/u-boot.itb
+            u-boot/uboot.img
+            u-boot/trust.img
+          retention-days: 30
