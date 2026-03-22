@@ -1,4 +1,4 @@
-name: Build U-Boot for RK3568
+name: 构建RK U-Boot
 
 # 触发条件：可以手动触发，也可以在你推送代码时自动触发
 on:
