@@ -1,88 +1,104 @@
-name: 构建 RK U-Boot
+name: 编译瑞芯微 U-Boot
 
 on:
   workflow_dispatch:
     inputs:
       u_boot_repo:
-        description: 'U-Boot 仓库地址 (默认主线)'
+        description: 'U-Boot 仓库地址'
         required: false
         default: 'https://github.com/u-boot/u-boot.git'
       u_boot_ref:
-        description: 'U-Boot 分支或标签 (如 v2025.01)'
+        description: 'U-Boot 分支或标签（如 v2025.01）'
         required: false
         default: 'v2025.01'
       defconfig:
-        description: '使用的 defconfig (例如 rk3568_defconfig)'
+        description: 'defconfig 名称'
         required: false
-        default: 'rk3568_defconfig'
-      custom_dts:
-        description: '是否使用自定义设备树？'
+        default: 'rk3568_hinlink_h68ktv_defconfig'
+      use_custom_dtb:
+        description: '使用自定义DTB'
         required: true
         type: choice
         options:
-          - 'false'
-          - 'true'
-        default: 'false'
+          - '否'
+          - '是'
+        default: '是'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout user repo (自定义配置)
+      - name: 拉取仓库
         uses: actions/checkout@v4
         with:
           path: user-repo
 
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           sudo apt update
           sudo apt install -y git make gcc g++ libssl-dev device-tree-compiler \
             python3 python3-dev python3-pip gcc-aarch64-linux-gnu bison flex bc cpio
 
-      - name: Clone U-Boot source
+      - name: 克隆 U-Boot
         run: |
-          git clone --depth 1 --branch ${{ github.event.inputs.u_boot_ref || 'v2025.01' }} \
-            ${{ github.event.inputs.u_boot_repo || 'https://github.com/u-boot/u-boot.git' }} u-boot
+          git clone --depth 1 --branch ${{ github.event.inputs.u_boot_ref }} \
+            ${{ github.event.inputs.u_boot_repo }} u-boot
 
-      - name: Clone rkbin
+      - name: 克隆 rkbin
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: Apply custom device tree or defconfig
+      - name: 部署自定义 DTB 和配置
         run: |
-          if [ "${{ github.event.inputs.custom_dts }}" == "true" ]; then
-            echo "应用自定义配置..."
-            mkdir -p u-boot/arch/arm/dts
-            # 从 diy_Rockchip-uboot 拷贝
-            cp -rvf user-repo/diy_Rockchip-uboot/dts/*.dts* u-boot/arch/arm/dts/ 2>/dev/null || true
-            cp -rvf user-repo/diy_Rockchip-uboot/configs/*_defconfig u-boot/configs/ 2>/dev/null || true
-          else
-            echo "使用默认配置"
+          if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
+            echo "使用自定义 DTB + defconfig"
+            cp -v user-repo/diy_Rockchip-uboot/dtb/*.dtb u-boot/arch/arm/dts/
+            cp -v user-repo/diy_Rockchip-uboot/configs/*_defconfig u-boot/configs/
           fi
 
-      - name: Build U-Boot
+      - name: 编译 U-Boot
         run: |
           cd u-boot
-          export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
-
+          export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
-          echo "ROCKCHIP_TPL=$ROCKCHIP_TPL"
-          echo "BL31=$BL31"
-
-          make ${{ github.event.inputs.defconfig || 'rk3568_defconfig' }}
+          make ${{ github.event.inputs.defconfig }}
           make -j$(nproc)
 
-      - name: Upload artifacts
+      # 打包成一个 zip
+      - name: 打包固件
+        run: |
+          mkdir -p output
+          cp -v u-boot/idbloader.img output/
+          cp -v u-boot/u-boot.itb output/
+          cp -v u-boot/uboot.img output/
+          cp -v u-boot/trust.img output/
+          cp -v u-boot/u-boot-rockchip.bin output/
+          zip -j u-boot-h68ktv.zip output/*
+
+      # 上传到 Actions（临时，30天）
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: u-boot-rockchip-bin-${{ github.sha }}
-          path: |
-            u-boot/idbloader.img
-            u-boot/u-boot.itb
-            u-boot/uboot.img
-            u-boot/trust.img
-            u-boot/u-boot-rockchip.bin
+          name: u-boot-h68ktv
+          path: output/
           retention-days: 30
+
+      # 自动发布到 GitHub Release（永久保存）
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: auto-build-${{ github.sha }}
+          name: U-Boot H68KTV 自动构建 ${{ github.sha }}
+          body: |
+            瑞芯微 RK3568 Hinlink H68KTV U-Boot 自动编译
+            U-Boot: ${{ github.event.inputs.u_boot_ref }}
+            Defconfig: ${{ github.event.inputs.defconfig }}
+            自定义DTB: ${{ github.event.inputs.use_custom_dtb }}
+          files: u-boot-h68ktv.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
