@@ -1,7 +1,7 @@
 name: 构建 RK U-Boot
 
 on:
-  workflow_dispatch:        # 仅允许手动触发
+  workflow_dispatch:
     inputs:
       u_boot_repo:
         description: 'U-Boot 仓库地址 (默认主线)'
@@ -16,11 +16,13 @@ on:
         required: false
         default: 'rk3568_defconfig'
       custom_dts:
-        description: '是否使用自定义设备树？(true/false)'
-        required: false
+        description: '是否使用自定义设备树？'
+        required: true
+        type: choice
+        options:
+          - 'false'
+          - 'true'
         default: 'false'
-
-# 移除了 push 触发，彻底禁用自动构建
 
 jobs:
   build:
@@ -48,10 +50,12 @@ jobs:
 
       - name: Apply custom device tree or defconfig
         run: |
-          if [ -d user-repo/configs ] && [ "${{ github.event.inputs.custom_dts }}" == "true" ]; then
+          if [ "${{ github.event.inputs.custom_dts }}" == "true" ]; then
             echo "应用自定义配置..."
-            cp -rvf user-repo/dts/*.dts* u-boot/arch/arm/dts/ 2>/dev/null || true
-            cp -rvf user-repo/configs/*_defconfig u-boot/configs/ 2>/dev/null || true
+            mkdir -p u-boot/arch/arm/dts
+            # 从 diy_Rockchip-uboot 拷贝
+            cp -rvf user-repo/diy_Rockchip-uboot/dts/*.dts* u-boot/arch/arm/dts/ 2>/dev/null || true
+            cp -rvf user-repo/diy_Rockchip-uboot/configs/*_defconfig u-boot/configs/ 2>/dev/null || true
           else
             echo "使用默认配置"
           fi
@@ -61,14 +65,13 @@ jobs:
           cd u-boot
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
-          
-          # 自动查找最新的 DDR 固件
+
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
-          
-          echo "Using ROCKCHIP_TPL=$ROCKCHIP_TPL"
-          echo "Using BL31=$BL31"
-          
+
+          echo "ROCKCHIP_TPL=$ROCKCHIP_TPL"
+          echo "BL31=$BL31"
+
           make ${{ github.event.inputs.defconfig || 'rk3568_defconfig' }}
           make -j$(nproc)
 
