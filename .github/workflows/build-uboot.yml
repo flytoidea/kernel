@@ -62,7 +62,7 @@ jobs:
             fi
           fi
 
-      - name: 编译 U-Boot（全自动非交互版）
+      - name: 编译 U-Boot（彻底非交互版）
         run: |
           cd u-boot
           rm -f .config
@@ -76,31 +76,26 @@ jobs:
           scripts/config --enable OF_BOARD_SETUP
           scripts/config --enable CMD_FDT
 
-          # 3. 删除所有值为空的配置行（防止警告和交互）
+          # 3. 删除所有空值行和错误的符号行（TEXT_BASE, SYS_UBOOT_START）
           sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
+          sed -i '/^TEXT_BASE=/d' .config
+          sed -i '/^SYS_UBOOT_START=/d' .config
 
-          # 4. 自动接受所有默认选项完成配置
-          yes "" | make ARCH=arm64 olddefconfig
-
-          # 5. 再次强制确认 CONFIG_ARM64=y
+          # 4. 再次强制确认 CONFIG_ARM64=y
           if ! grep -q "^CONFIG_ARM64=y" .config; then
             echo "CONFIG_ARM64=y" >> .config
           fi
-          # 禁用可能冲突的选项
           sed -i '/^# CONFIG_ARM64 is not set/d' .config
           sed -i '/^CONFIG_ARM64=n/d' .config
-          grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用" ; exit 1; }
 
-          # 6. 再次运行 olddefconfig 同步依赖（非交互）
-          yes "" | make ARCH=arm64 olddefconfig
-
-          # 7. 设置环境变量并编译
+          # 5. 设置环境变量并直接编译（让 make 自动处理配置同步，非交互）
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
-          make -j$(nproc)
+          # 编译，禁止任何配置交互（若缺失则使用默认值）
+          make -j$(nproc) KCONFIG_NOSILENTUPDATE=1
 
       - name: 打包固件
         run: |
