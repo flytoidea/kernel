@@ -12,7 +12,7 @@ on:
         required: false
         default: 'next-dev'
       defconfig:
-        description: 'defconfig 名称'
+        description: 'defconfig 名称 (例如 rk3568_hinlink_h68ktv 或 rk3568_hinlink_h68ktv_defconfig)'
         required: false
         default: 'rk3568_hinlink_h68ktv_defconfig'
       use_custom_dtb:
@@ -49,7 +49,6 @@ jobs:
       - name: 部署自定义 DTB 和 defconfig
         run: |
           set -e
-          # 确保自定义 defconfig 被放置到正确位置
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
             if [ -d "diy-rockchip_uboot/configs" ]; then
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
@@ -62,26 +61,27 @@ jobs:
               cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
             fi
           fi
-          
-          # 关键：将 rkbin 目录移动到 u-boot 目录下，供 make.sh 使用
+          # 移动 rkbin 到 u-boot 目录下
           mv rkbin u-boot/
 
       - name: 使用 make.sh 编译 U-Boot
         run: |
           cd u-boot
-          # 1. 清理旧配置文件，确保干净构建
+          # 清理
           make mrproper
-
-          # 2. 直接调用 make.sh 脚本进行编译和打包
-          #    ARCH=arm64 指定架构
-          #    CROSS_COMPILE=aarch64-linux-gnu- 指定交叉编译工具链前缀
-          #    ./make.sh ${{ github.event.inputs.defconfig }} 使用指定的 defconfig 进行构建
-          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ./make.sh ${{ github.event.inputs.defconfig }}
+          # 获取 defconfig 名称，去掉 _defconfig 后缀（make.sh 会自动添加）
+          DEFCONFIG_NAME="${{ github.event.inputs.defconfig }}"
+          DEFCONFIG_NAME="${DEFCONFIG_NAME%_defconfig}"
+          echo "使用板子名称: $DEFCONFIG_NAME"
+          # 确保 make.sh 可执行
+          chmod +x make.sh
+          # 编译
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ./make.sh "$DEFCONFIG_NAME"
 
       - name: 打包固件
         run: |
           mkdir -p output
-          cd u-brockchip_u-boot
+          cd u-boot
           # 根据 make.sh 的实际输出，复制生成的固件文件到 output 目录
           for f in idbloader.img u-boot.itb uboot.img trust.img u-boot-rockchip.bin; do
             [ -f "$f" ] && cp -v "$f" ../output/
