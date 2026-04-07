@@ -48,13 +48,36 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 部署自定义 DTB 和配置
+      - name: 部署自定义 DTB 和 defconfig
         run: |
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
             echo "使用自定义 DTB + defconfig"
-            cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
-            cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/
+            # 复制设备树（如果有）
+            if [ -d "user-repo/diy-Rockchip_uboot/dtb" ]; then
+              cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ || true
+            fi
+            # 复制 defconfig
+            if [ -d "user-repo/diy-Rockchip_uboot/configs" ]; then
+              cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/ || true
+            fi
           fi
+
+      - name: 配置 U-Boot（不使用 menuconfig）
+        run: |
+          cd u-boot
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # 加载基础 defconfig
+          make ${{ github.event.inputs.defconfig }}
+          
+          # 可选：通过 sed 直接修改 .config 中的任何额外选项（示例）
+          # echo 'CONFIG_SYS_LOAD_ADDR=0x2000000' >> .config
+          # 或者修改已有配置：
+          # sed -i 's/CONFIG_SYS_LOAD_ADDR=.*/CONFIG_SYS_LOAD_ADDR=0x2000000/' .config
+          
+          # 生成完整配置（自动处理新配置项，不会打开交互界面）
+          make olddefconfig
 
       - name: 编译 U-Boot
         run: |
@@ -63,11 +86,9 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
-
-          make ${{ github.event.inputs.defconfig }}
+          
           make -j$(nproc)
 
-      # 打包成一个 zip
       - name: 打包固件
         run: |
           mkdir -p output
@@ -78,7 +99,6 @@ jobs:
           cp -v u-boot/u-boot-rockchip.bin output/
           zip -j u-boot-h68ktv.zip output/*
 
-      # 上传到 Actions（临时，30天）
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -86,7 +106,6 @@ jobs:
           path: output/
           retention-days: 30
 
-      # 自动发布到 GitHub Release（永久保存）
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
         with:
