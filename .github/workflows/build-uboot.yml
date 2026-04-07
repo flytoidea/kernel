@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (终极版)
+name: 编译瑞芯微 U-Boot (最终稳定版)
 
 on:
   workflow_dispatch:
@@ -6,11 +6,11 @@ on:
       u_boot_repo:
         description: 'U-Boot 仓库地址'
         required: false
-        default: 'https://github.com/u-boot/u-boot.git'
+        default: 'https://github.com/rockchip-linux/u-boot.git'
       u_boot_ref:
         description: 'U-Boot 分支或标签'
         required: false
-        default: 'v2025.01'
+        default: 'next-dev'
       defconfig:
         description: 'defconfig 名称'
         required: false
@@ -46,100 +46,43 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 准备自定义 defconfig 和 DTB
+      - name: 部署自定义 DTB 和 defconfig
         run: |
-          cd u-boot
-          # 直接写入完整的 defconfig 内容（已修正，包含 CONFIG_ARM64=y，无空行）
-          cat > configs/${{ github.event.inputs.defconfig }} << 'EOF'
-CONFIG_ARM64=y
-CONFIG_ARCH_ROCKCHIP=y
-CONFIG_ROCKCHIP_RK3568=y
-CONFIG_SYS_SOC="rk3568"
-CONFIG_OF_LIBFDT=y
-CONFIG_OF_BOARD_SETUP=y
-CONFIG_CMD_FDT=y
-CONFIG_CMD_EXTENSION=y
-CONFIG_SUPPORT_EXTENSION_SCAN=y
-CONFIG_SPL_LIBCOMMON_SUPPORT=y
-CONFIG_SPL_LIBGENERIC_SUPPORT=y
-CONFIG_SPL_FRAMEWORK=y
-CONFIG_SPL_MMC=y
-CONFIG_SPL_SERIAL=y
-CONFIG_SPL_STACK=0x400000
-CONFIG_SPL_STACK_R=y
-CONFIG_SPL_STACK_R_MALLOC_SIMPLE_LEN=0x100000
-CONFIG_SPL_SYS_MALLOC_SIMPLE=y
-CONFIG_SPL_ATF=y
-CONFIG_SPL_ATF_NO_PLATFORM_PARAM=y
-CONFIG_SPL_BOARD_INIT=y
-CONFIG_SPL_BSS_START_ADDR=0x4000000
-CONFIG_SPL_BSS_MAX_SIZE=0x20000
-CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x200
-CONFIG_SYS_MMCSD_FS_BOOT_PARTITION=1
-CONFIG_SYS_TEXT_BASE=0x00200000
-CONFIG_SYS_LOAD_ADDR=0x00080000
-CONFIG_SYS_INIT_SP_ADDR=0x400000
-CONFIG_NR_DRAM_BANKS=2
-CONFIG_DEFAULT_DEVICE_TREE="rk3568-hinlink-h68ktv"
-CONFIG_DEBUG_UART=y
-CONFIG_DEBUG_UART_BASE=0xfef50000
-CONFIG_DEBUG_UART_CLOCK=24000000
-CONFIG_DEBUG_UART_SHIFT=2
-CONFIG_ENV_SIZE=0x8000
-CONFIG_ENV_OFFSET=0x3f8000
-CONFIG_ENV_SECT_SIZE=0x10000
-CONFIG_CMD_MMC=y
-CONFIG_MMC=y
-CONFIG_ROCKCHIP_DWMMC=y
-CONFIG_ROCKCHIP_SDHCI=y
-CONFIG_CMD_USB=y
-CONFIG_USB=y
-CONFIG_USB_EHCI_HCD=y
-CONFIG_USB_OHCI_HCD=y
-CONFIG_USB_DWC2=y
-CONFIG_USB_STORAGE=y
-CONFIG_CMD_NET=y
-CONFIG_NET=y
-CONFIG_ETH_DESIGNWARE=y
-CONFIG_ROCKCHIP_GMAC=y
-CONFIG_PHY_GIGE=y
-CONFIG_PCI=y
-CONFIG_DM_PCI=y
-CONFIG_PCIE_DW_ROCKCHIP=y
-CONFIG_PHY_ROCKCHIP_SNPS_PCIE3=y
-CONFIG_CMD_PCI=y
-CONFIG_SYSRESET=y
-CONFIG_BOOTDELAY=3
-CONFIG_BOOTCOMMAND="pci enum; run boot_usb; run boot_mmc1; run boot_mmc0"
-EOF
-
-          # 如果用户提供了自定义 DTB，则复制
+          set -e
+          # 确保自定义 defconfig 被放置到正确位置
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
-            if [ -d "../diy-rockchip_uboot/dtb" ]; then
-              cp -v ../diy-rockchip_uboot/dtb/*.dtb arch/arm/dts/ 2>/dev/null || true
-            elif [ -d "../diy-Rockchip_uboot/dtb" ]; then
-              cp -v ../diy-Rockchip_uboot/dtb/*.dtb arch/arm/dts/ 2>/dev/null || true
+            if [ -d "diy-rockchip_uboot/configs" ]; then
+              cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
+            elif [ -d "diy-Rockchip_uboot/configs" ]; then
+              cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
+            else
+              echo "警告: 未找到自定义 configs 目录，将使用默认 defconfig"
+            fi
+            if [ -d "diy-rockchip_uboot/dtb" ]; then
+              cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
             fi
           fi
+          
+          # 关键：将 rkbin 目录移动到 u-boot 目录下，供 make.sh 使用
+          mv rkbin u-boot/
 
-      - name: 编译 U-Boot
+      - name: 使用 make.sh 编译 U-Boot
         run: |
           cd u-boot
-          # 生成 .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
-          # 验证 ARM64 已启用（小写 y）
-          grep -q "^CONFIG_ARM64=y" .config || { echo "错误: ARM64 未启用"; exit 1; }
-          # 设置环境变量并直接编译（不运行 olddefconfig/syncconfig）
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
-          export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
-          make -j$(nproc)
+          # 1. 清理旧配置文件，确保干净构建
+          make mrproper
+
+          # 2. 直接调用 make.sh 脚本进行编译和打包
+          #    ARCH=arm64 指定架构
+          #    CROSS_COMPILE=aarch64-linux-gnu- 指定交叉编译工具链前缀
+          #    ./make.sh ${{ github.event.inputs.defconfig }} 使用指定的 defconfig 进行构建
+          ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ./make.sh ${{ github.event.inputs.defconfig }}
 
       - name: 打包固件
         run: |
           mkdir -p output
-          cd u-boot
+          cd u-brockchip_u-boot
+          # 根据 make.sh 的实际输出，复制生成的固件文件到 output 目录
           for f in idbloader.img u-boot.itb uboot.img trust.img u-boot-rockchip.bin; do
             [ -f "$f" ] && cp -v "$f" ../output/
           done
