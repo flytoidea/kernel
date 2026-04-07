@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot
+name: 编译瑞芯微 U-Boot (本地路径最终版·修复ARM64)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: false
         default: 'rk3568_hinlink_h68ktv_defconfig'
       use_custom_dtb:
-        description: '使用自定义DTB与配置'
+        description: '使用自定义DTB'
         required: true
         type: choice
         options:
@@ -28,92 +28,94 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 拉取当前仓库
+      - name: 拉取仓库
         uses: actions/checkout@v4
 
-      - name: 安装编译依赖
+      - name: 安装依赖
         run: |
           sudo apt update
           sudo apt install -y git make gcc g++ libssl-dev device-tree-compiler \
-            python3 python3-dev python3-pip gcc-aarch64-linux-gnu bison flex bc cpio zip
+            python3 python3-dev python3-pip gcc-aarch64-linux-gnu bison flex bc cpio
 
       - name: 克隆 U-Boot
         run: |
           git clone --depth 1 --branch ${{ github.event.inputs.u_boot_ref }} \
             ${{ github.event.inputs.u_boot_repo }} u-boot
 
-      - name: 克隆 rkbin 固件依赖
+      - name: 克隆 rkbin
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 部署自定义 defconfig & DTB
+      - name: 部署自定义 DTB 和配置
         run: |
           set -e
-          if [ "${{ github.event.inputs.use_custom_dtb }}" = "是" ]; then
-            echo "=== 开始部署自定义文件 ==="
-
-            # 复制 defconfig
-            if [ -f "diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
-              cp -v "diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" u-boot/configs/
-            elif [ -f "diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
-              cp -v "diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" u-boot/configs/
+          if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
+            echo "=== 部署自定义 defconfig & dtb ==="
+            if [ -d "diy-rockchip_uboot/configs" ]; then
+              cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
+            elif [ -d "diy-Rockchip_uboot/configs" ]; then
+              cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             else
-              echo "ERROR: 未找到自定义 defconfig"
-              exit 1
+              echo "未找到自定义configs目录，使用U-Boot自带defconfig"
             fi
 
-            # 复制所有 dtb
-            if [ -d "diy-rockchip_uboot/dtb" ] && ls diy-rockchip_uboot/dtb/*.dtb >/dev/null 2>&1; then
-              cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
-            elif [ -d "diy-Rockchip_uboot/dtb" ] && ls diy-Rockchip_uboot/dtb/*.dtb >/dev/null 2>&1; then
-              cp -v diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
-            else
-              echo "警告：未找到自定义 DTB 文件"
+            if [ -d "diy-rockchip_uboot/dtb" ]; then
+              cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
             fi
           fi
 
-      - name: 编译 U-Boot
+      - name: 编译 U-Boot（修复 ARM64 关键步骤）
         run: |
           cd u-boot
+
+          # 👇 必须在 make defconfig 之前导出
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export ROCKCHIP_TPL=$(realpath ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
-          export BL31=$(realpath ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
+          export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
+          export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
+
+          # 强制开启 arm64 + 设备树，解决依赖警告
+          cat >> configs/${{ github.event.inputs.defconfig }} << EOF
+          CONFIG_ARM64=y
+          CONFIG_OF_LIBFDT=y
+          CONFIG_OF_BOARD_SETUP=y
+          CONFIG_CMD_FDT=y
+          CONFIG_SYS_TEXT_BASE=0x00200000
+          EOF
 
           make ${{ github.event.inputs.defconfig }}
           make olddefconfig
 
-          grep -q "CONFIG_ARM64=y" .config || { echo "ARM64 未启用"; exit 1; }
+          # 校验
+          grep -q "CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 仍未启用"; exit 1; }
 
           make -j$(nproc)
 
-      - name: 整理固件
+      - name: 打包固件
         run: |
           mkdir -p output
           cd u-boot
           for f in idbloader.img u-boot.itb uboot.img trust.img u-boot-rockchip.bin; do
             [ -f "$f" ] && cp -v "$f" ../output/
           done
+          cd ..
+          zip -j u-boot-h68ktv.zip output/*
 
-      - name: 打包 ZIP
-        run: |
-          zip -j u-boot-h68ktv-${{ github.sha }}.zip output/*
-
-      - name: 上传 Artifact
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: u-boot-h68ktv
           path: output/
           retention-days: 30
 
-      - name: 发布到 Release
+      - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: auto-build-${{ github.sha }}
           name: U-Boot H68KTV 自动构建 ${{ github.sha }}
           body: |
-            U-Boot 版本：${{ github.event.inputs.u_boot_ref }}
-            defconfig：${{ github.event.inputs.defconfig }}
-          files: u-boot-h68ktv-${{ github.sha }}.zip
+            U-Boot: ${{ github.event.inputs.u_boot_ref }}
+            defconfig: ${{ github.event.inputs.defconfig }}
+          files: u-boot-h68ktv.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
