@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot
+name: 编译瑞芯微 U-Boot (本地路径最终版)
 
 on:
   workflow_dispatch:
@@ -50,42 +50,43 @@ jobs:
         run: |
           set -e
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
-            echo "=== 部署自定义 defconfig & dtb ==="
             if [ -d "diy-rockchip_uboot/configs" ]; then
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             elif [ -d "diy-Rockchip_uboot/configs" ]; then
               cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             fi
-
             if [ -d "diy-rockchip_uboot/dtb" ]; then
               cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
             fi
           fi
 
-      - name: 编译 U-Boot
+      - name: 编译 U-Boot（强制 ARM64 兜底版）
         run: |
           cd u-boot
           rm -f .config
 
+          # 核心：直接用命令行强行指定架构，不从配置读取
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
+
+          # 直接暴力写入必须配置，避免任何依赖问题
+          echo "CONFIG_ARM64=y" >> .config
+          echo "CONFIG_OF_LIBFDT=y" >> .config
+          echo "CONFIG_OF_BOARD_SETUP=y" >> .config
+          echo "CONFIG_CMD_FDT=y" >> .config
+          echo "CONFIG_SYS_TEXT_BASE=0x00200000" >> .config
+          echo "CONFIG_SYS_UBOOT_START=0x00200000" >> .config
+
+          # 再刷新一次
+          make ARCH=arm64 olddefconfig
+
+          # 检查是否开启
+          grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用" ; exit 1; }
+
+          # 编译
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
-
-          make ${{ github.event.inputs.defconfig }}
-
-          cat >> .config << EOF
-          CONFIG_ARM64=y
-          CONFIG_OF_LIBFDT=y
-          CONFIG_OF_BOARD_SETUP=y
-          CONFIG_CMD_FDT=y
-          CONFIG_SYS_TEXT_BASE=0x00200000
-          CONFIG_SYS_UBOOT_START=0x00080000
-          EOF
-
-          make olddefconfig
-
-          grep -q "CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用"; exit 1; }
 
           make -j$(nproc)
 
@@ -99,21 +100,19 @@ jobs:
           cd ..
           zip -j u-boot-h68ktv.zip output/*
 
-      - name: 上传构建产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: u-boot-h68ktv
           path: output/
           retention-days: 30
 
-      - name: 发布到 Release
+      - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: auto-build-${{ github.sha }}
-          name: U-Boot H68KTV 自动构建 ${{ github.sha }}
-          body: |
-            U-Boot: ${{ github.event.inputs.u_boot_ref }}
-            defconfig: ${{ github.event.inputs.defconfig }}
+          name: U-Boot H68KTV 自动构建
+          body: "U-Boot: ${{ github.event.inputs.u_boot_ref }}"
           files: u-boot-h68ktv.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
