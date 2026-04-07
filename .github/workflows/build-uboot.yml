@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (最终修正版)
+name: 编译瑞芯微U-Boot
 
 on:
   workflow_dispatch:
