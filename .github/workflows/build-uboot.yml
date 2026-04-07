@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot
+name: 编译瑞芯微 U-Boot (最终修复版)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: false
         default: 'https://github.com/u-boot/u-boot.git'
       u_boot_ref:
-        description: 'U-Boot 分支或标签（如 v2025.01）'
+        description: 'U-Boot 分支或标签（建议 v2025.01 以上）'
         required: false
         default: 'v2025.01'
       defconfig:
@@ -50,19 +50,22 @@ jobs:
 
       - name: 部署自定义 DTB 和配置
         run: |
+          set -e  # 出错即停
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
-            echo "=== 使用自定义 DTB + defconfig ==="
-            # 复制 dtb 文件（如果存在）
-            if ls user-repo/diy-Rockchip_uboot/dtb/*.dtb 1> /dev/null 2>&1; then
-              cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
+            echo "=== 部署自定义文件 ==="
+            # 复制 defconfig（直接指定文件名，避免通配符问题）
+            CUSTOM_DEFCONFIG="user-repo/diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}"
+            if [ -f "$CUSTOM_DEFCONFIG" ]; then
+              cp -v "$CUSTOM_DEFCONFIG" u-boot/configs/
             else
-              echo "警告：未找到 .dtb 文件，跳过"
+              echo "错误：找不到 defconfig 文件: $CUSTOM_DEFCONFIG"
+              exit 1
             fi
-            # 复制 defconfig 文件（如果存在）
-            if ls user-repo/diy-Rockchip_uboot/configs/*_defconfig 1> /dev/null 2>&1; then
-              cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/
+            # 复制 dtb（如果目录中有 .dtb 文件）
+            if ls user-repo/diy-rockchip_uboot/dtb/*.dtb 1>/dev/null 2>&1; then
+              cp -v user-repo/diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
             else
-              echo "警告：未找到 defconfig 文件，跳过"
+              echo "警告：未找到 .dtb 文件，将使用 U-Boot 自带的 dtb"
             fi
           fi
 
@@ -70,8 +73,10 @@ jobs:
         run: |
           echo "=== configs 目录内容 ==="
           ls -la u-boot/configs/ | grep -E "defconfig|rk3568" || echo "无 defconfig"
-          echo "=== arch/arm/dts 目录中的自定义 dtb ==="
+          echo "=== arch/arm/dts 中的自定义 dtb ==="
           ls -la u-boot/arch/arm/dts/ | grep -E "rk3568-hinlink" || echo "无自定义 dtb"
+          echo "=== defconfig 内容预览 ==="
+          head -20 u-boot/configs/${{ github.event.inputs.defconfig }} || echo "无法读取 defconfig"
 
       - name: 编译 U-Boot
         run: |
@@ -81,21 +86,33 @@ jobs:
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
-          # 检查 defconfig 是否存在
+          # 确认 defconfig 存在
           if [ ! -f "configs/${{ github.event.inputs.defconfig }}" ]; then
             echo "ERROR: configs/${{ github.event.inputs.defconfig }} 不存在！"
             exit 1
           fi
 
           # 生成配置
+          echo "执行: make ${{ github.event.inputs.defconfig }}"
           make ${{ github.event.inputs.defconfig }}
-          # 避免交互式配置
-          make olddefconfig
-          # 验证是否成功配置为 ARM64
-          if ! grep -q "CONFIG_ARM64=y" .config; then
-            echo "ERROR: ARM64 未启用，配置失败"
+
+          # 检查 .config 是否生成
+          if [ ! -f .config ]; then
+            echo "ERROR: make defconfig 未生成 .config"
             exit 1
           fi
+
+          # 避免交互
+          make olddefconfig
+
+          # 强制验证 ARM64 是否启用
+          if ! grep -q "CONFIG_ARM64=y" .config; then
+            echo "ERROR: ARM64 未启用，配置失败"
+            echo "当前 .config 中 ARCH 相关行："
+            grep -E "CONFIG_ARM|CONFIG_ARCH|CONFIG_SANDBOX" .config || true
+            exit 1
+          fi
+
           # 编译
           make -j$(nproc)
 
@@ -107,11 +124,11 @@ jobs:
             if [ -f "$f" ]; then
               cp -v "$f" ../output/
             else
-              echo "警告：$f 不存在"
+              echo "警告：$f 不存在，跳过"
             fi
           done
           cd ..
-          zip -j u-boot-h68ktv.zip output/*
+          zip -j u-boot-h68ktv.zip output/* || echo "没有可打包的文件"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
