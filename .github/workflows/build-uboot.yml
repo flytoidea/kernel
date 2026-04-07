@@ -51,12 +51,27 @@ jobs:
       - name: 部署自定义 DTB 和配置
         run: |
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
-            echo "使用自定义 DTB + defconfig"
+            echo "=== 使用自定义 DTB + defconfig ==="
             # 复制 dtb 文件（如果存在）
-            cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
+            if ls user-repo/diy-Rockchip_uboot/dtb/*.dtb 1> /dev/null 2>&1; then
+              cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
+            else
+              echo "警告：未找到 .dtb 文件，跳过"
+            fi
             # 复制 defconfig 文件（如果存在）
-            cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/ 2>/dev/null || true
+            if ls user-repo/diy-Rockchip_uboot/configs/*_defconfig 1> /dev/null 2>&1; then
+              cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/
+            else
+              echo "警告：未找到 defconfig 文件，跳过"
+            fi
           fi
+
+      - name: 检查配置和 DTB
+        run: |
+          echo "=== configs 目录内容 ==="
+          ls -la u-boot/configs/ | grep -E "defconfig|rk3568" || echo "无 defconfig"
+          echo "=== arch/arm/dts 目录中的自定义 dtb ==="
+          ls -la u-boot/arch/arm/dts/ | grep -E "rk3568-hinlink" || echo "无自定义 dtb"
 
       - name: 编译 U-Boot
         run: |
@@ -66,21 +81,36 @@ jobs:
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
+          # 检查 defconfig 是否存在
+          if [ ! -f "configs/${{ github.event.inputs.defconfig }}" ]; then
+            echo "ERROR: configs/${{ github.event.inputs.defconfig }} 不存在！"
+            exit 1
+          fi
+
           # 生成配置
           make ${{ github.event.inputs.defconfig }}
-          # 将所有未配置的选项自动设为默认值，避免交互
+          # 避免交互式配置
           make olddefconfig
+          # 验证是否成功配置为 ARM64
+          if ! grep -q "CONFIG_ARM64=y" .config; then
+            echo "ERROR: ARM64 未启用，配置失败"
+            exit 1
+          fi
           # 编译
           make -j$(nproc)
 
       - name: 打包固件
         run: |
           mkdir -p output
-          cp -v u-boot/idbloader.img output/ 2>/dev/null || true
-          cp -v u-boot/u-boot.itb output/ 2>/dev/null || true
-          cp -v u-boot/uboot.img output/ 2>/dev/null || true
-          cp -v u-boot/trust.img output/ 2>/dev/null || true
-          cp -v u-boot/u-boot-rockchip.bin output/ 2>/dev/null || true
+          cd u-boot
+          for f in idbloader.img u-boot.itb uboot.img trust.img u-boot-rockchip.bin; do
+            if [ -f "$f" ]; then
+              cp -v "$f" ../output/
+            else
+              echo "警告：$f 不存在"
+            fi
+          done
+          cd ..
           zip -j u-boot-h68ktv.zip output/*
 
       - name: 上传构建产物
