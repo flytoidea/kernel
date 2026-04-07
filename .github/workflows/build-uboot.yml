@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (本地路径最终版)
+name: 编译瑞芯微 U-Boot (最终稳定版)
 
 on:
   workflow_dispatch:
@@ -46,7 +46,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 部署自定义 DTB 和配置（并修复 defconfig）
+      - name: 部署自定义 DTB 和 defconfig
         run: |
           set -e
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
@@ -55,8 +55,6 @@ jobs:
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             elif [ -d "diy-Rockchip_uboot/configs" ]; then
               cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
-            else
-              echo "警告: 未找到自定义 configs 目录，将使用默认 defconfig"
             fi
             # 复制自定义 DTB
             if [ -d "diy-rockchip_uboot/dtb" ]; then
@@ -64,36 +62,14 @@ jobs:
             fi
           fi
 
-          # 关键修复：确保 defconfig 中包含 CONFIG_ARM64=y
-          cd u-boot
-          DEFCONFIG_PATH="configs/${{ github.event.inputs.defconfig }}"
-          if [ -f "$DEFCONFIG_PATH" ]; then
-            if ! grep -q "^CONFIG_ARM64=y" "$DEFCONFIG_PATH"; then
-              echo "CONFIG_ARM64=y" >> "$DEFCONFIG_PATH"
-              echo "已向 defconfig 添加 CONFIG_ARM64=y"
-            fi
-            # 同时删除可能存在的空行或错误行
-            sed -i '/^TEXT_BASE=/d' "$DEFCONFIG_PATH"
-            sed -i '/^SYS_UBOOT_START=/d' "$DEFCONFIG_PATH"
-          else
-            echo "错误: defconfig 文件不存在: $DEFCONFIG_PATH"
-            exit 1
-          fi
-
-      - name: 编译 U-Boot（直接编译，不额外同步配置）
+      - name: 编译 U-Boot（无配置重置）
         run: |
           cd u-boot
-          # 清理旧配置
-          rm -f .config
-
-          # 生成 .config（此时已包含 CONFIG_ARM64=y）
+          # 生成 .config（您的 defconfig 已包含 CONFIG_ARM64=y）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 验证 ARM64 已启用
-          if ! grep -q "^CONFIG_ARM64=y" .config; then
-            echo "错误: .config 中未启用 ARM64，请检查 defconfig"
-            exit 1
-          fi
+          # 确认 ARM64 已启用（如果失败则立即报错）
+          grep -q "^CONFIG_ARM64=y" .config || { echo "错误: ARM64 未启用"; exit 1; }
 
           # 设置环境变量
           export ARCH=arm64
@@ -101,7 +77,7 @@ jobs:
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
-          # 直接编译（make 会自动调用需要的配置同步，但不会重置 ARM64）
+          # 直接编译（不运行 olddefconfig/syncconfig）
           make -j$(nproc)
 
       - name: 打包固件
