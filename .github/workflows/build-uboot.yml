@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (最终修复版)
+name: 编译瑞芯微 U-Boot (最终修正版)
 
 on:
   workflow_dispatch:
@@ -50,11 +50,11 @@ jobs:
 
       - name: 部署自定义 DTB 和配置
         run: |
-          set -e  # 出错即停
+          set -e
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
             echo "=== 部署自定义文件 ==="
             # 复制 defconfig（直接指定文件名，避免通配符问题）
-            CUSTOM_DEFCONFIG="user-repo/diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}"
+            CUSTOM_DEFCONFIG="user-repo/diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}"
             if [ -f "$CUSTOM_DEFCONFIG" ]; then
               cp -v "$CUSTOM_DEFCONFIG" u-boot/configs/
             else
