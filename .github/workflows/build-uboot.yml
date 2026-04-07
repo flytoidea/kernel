@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (本地路径最终版)
+name: 编译瑞芯微 U-Boot
 
 on:
   workflow_dispatch:
