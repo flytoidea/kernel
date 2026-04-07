@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot
+name: 编译瑞芯微U-Boot
 
 on:
   workflow_dispatch:
@@ -54,6 +54,8 @@ jobs:
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             elif [ -d "diy-Rockchip_uboot/configs" ]; then
               cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
+            else
+              echo "警告: 未找到自定义 configs 目录，将使用默认 defconfig"
             fi
             if [ -d "diy-rockchip_uboot/dtb" ]; then
               cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
@@ -65,24 +67,26 @@ jobs:
           cd u-boot
           rm -f .config
 
-          # 核心：直接用命令行强行指定架构，不从配置读取
+          # 1. 生成基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 直接暴力写入必须配置，避免任何依赖问题
-          echo "CONFIG_ARM64=y" >> .config
-          echo "CONFIG_OF_LIBFDT=y" >> .config
-          echo "CONFIG_OF_BOARD_SETUP=y" >> .config
-          echo "CONFIG_CMD_FDT=y" >> .config
-          echo "CONFIG_SYS_TEXT_BASE=0x00200000" >> .config
-          echo "CONFIG_SYS_UBOOT_START=0x00200000" >> .config
+          # 2. 确保 ARM64 已开启
+          if ! grep -q "^CONFIG_ARM64=y" .config; then
+            echo "CONFIG_ARM64=y" >> .config
+          fi
 
-          # 再刷新一次
+          # 3. 使用官方脚本强制开启必要选项（避免手动 echo 被重置）
+          scripts/config --enable CONFIG_OF_LIBFDT
+          scripts/config --enable CONFIG_OF_BOARD_SETUP
+          scripts/config --enable CONFIG_CMD_FDT
+
+          # 4. 重新生成依赖并保留手动修改
           make ARCH=arm64 olddefconfig
 
-          # 检查是否开启
+          # 5. 最终验证
           grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用" ; exit 1; }
 
-          # 编译
+          # 6. 设置环境变量并编译
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
