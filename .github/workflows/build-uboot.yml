@@ -68,7 +68,7 @@ jobs:
           # 生成 .config（您的 defconfig 已包含 CONFIG_ARM64=y）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 确认 ARM64 已启用（如果失败则立即报错）
+          # 确认 ARM64 已启用（注意大小写：y 小写）
           grep -q "^CONFIG_ARM64=y" .config || { echo "错误: ARM64 未启用"; exit 1; }
 
           # 设置环境变量
