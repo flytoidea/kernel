@@ -52,8 +52,8 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
             echo "使用自定义 DTB + defconfig"
-            cp -v user-repo/diy_Rockchip-uboot/dtb/*.dtb u-boot/arch/arm/dts/
-            cp -v user-repo/diy_Rockchip-uboot/configs/*_defconfig u-boot/configs/
+            cp -v user-repo/diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
+            cp -v user-repo/diy-Rockchip_uboot/configs/*_defconfig u-boot/configs/
           fi
 
       - name: 编译 U-Boot
