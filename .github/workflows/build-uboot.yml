@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (本地路径最终版·修复ARM64)
+name: 编译瑞芯微 U-Boot
 
 on:
   workflow_dispatch:
@@ -55,8 +55,6 @@ jobs:
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             elif [ -d "diy-Rockchip_uboot/configs" ]; then
               cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
-            else
-              echo "未找到自定义configs目录，使用U-Boot自带defconfig"
             fi
 
             if [ -d "diy-rockchip_uboot/dtb" ]; then
@@ -64,30 +62,30 @@ jobs:
             fi
           fi
 
-      - name: 编译 U-Boot（修复 ARM64 关键步骤）
+      - name: 编译 U-Boot
         run: |
           cd u-boot
+          rm -f .config
 
-          # 👇 必须在 make defconfig 之前导出
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
           export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
-          # 强制开启 arm64 + 设备树，解决依赖警告
-          cat >> configs/${{ github.event.inputs.defconfig }} << EOF
+          make ${{ github.event.inputs.defconfig }}
+
+          cat >> .config << EOF
           CONFIG_ARM64=y
           CONFIG_OF_LIBFDT=y
           CONFIG_OF_BOARD_SETUP=y
           CONFIG_CMD_FDT=y
           CONFIG_SYS_TEXT_BASE=0x00200000
+          CONFIG_SYS_UBOOT_START=0x00080000
           EOF
 
-          make ${{ github.event.inputs.defconfig }}
           make olddefconfig
 
-          # 校验
-          grep -q "CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 仍未启用"; exit 1; }
+          grep -q "CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用"; exit 1; }
 
           make -j$(nproc)
 
@@ -101,14 +99,14 @@ jobs:
           cd ..
           zip -j u-boot-h68ktv.zip output/*
 
-      - name: 上传产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: u-boot-h68ktv
           path: output/
           retention-days: 30
 
-      - name: 发布 Release
+      - name: 发布到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: auto-build-${{ github.sha }}
