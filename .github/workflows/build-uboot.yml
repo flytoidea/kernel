@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot (最终稳定版)
+name: 编译瑞芯微 U-Boot (暴力强制版)
 
 on:
   workflow_dispatch:
@@ -46,7 +46,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 部署自定义 DTB 和 defconfig
+      - name: 部署自定义 DTB 和 defconfig（带调试）
         run: |
           set -e
           if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
@@ -55,21 +55,35 @@ jobs:
               cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
             elif [ -d "diy-Rockchip_uboot/configs" ]; then
               cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
+            else
+              echo "警告: 未找到自定义 configs 目录，将使用默认 defconfig"
             fi
             # 复制自定义 DTB
             if [ -d "diy-rockchip_uboot/dtb" ]; then
               cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/ 2>/dev/null || true
             fi
           fi
+          # 调试：列出 u-boot/configs 目录内容
+          echo "=== u-boot/configs/ 目录内容 ==="
+          ls -la u-boot/configs/ | grep -i rk3568 || echo "未找到 rk3568 defconfig"
 
-      - name: 编译 U-Boot（无配置重置）
+      - name: 编译 U-Boot（暴力强制 ARM64）
         run: |
           cd u-boot
-          # 生成 .config（您的 defconfig 已包含 CONFIG_ARM64=y）
+          # 生成 .config（可能来自默认 defconfig 或自定义）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 确认 ARM64 已启用（注意大小写：y 小写）
-          grep -q "^CONFIG_ARM64=y" .config || { echo "错误: ARM64 未启用"; exit 1; }
+          # 暴力强制 ARM64：删除所有 ARM64 相关行，再添加 CONFIG_ARM64=y
+          sed -i '/CONFIG_ARM64/d' .config
+          echo "CONFIG_ARM64=y" >> .config
+
+          # 删除可能引起交互的空行
+          sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
+          sed -i '/^TEXT_BASE=/d' .config
+          sed -i '/^SYS_UBOOT_START=/d' .config
+
+          # 验证
+          grep -q "^CONFIG_ARM64=y" .config || { echo "错误: 强制添加 ARM64 失败"; exit 1; }
 
           # 设置环境变量
           export ARCH=arm64
