@@ -62,7 +62,7 @@ jobs:
             fi
           fi
 
-      - name: 编译 U-Boot（彻底解决交互问题）
+      - name: 编译 U-Boot（双重强制 ARM64）
         run: |
           cd u-boot
           rm -f .config
@@ -70,35 +70,33 @@ jobs:
           # 1. 生成基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 2. 使用 scripts/config 开启必要选项
+          # 2. 开启必要选项
           scripts/config --enable ARM64
           scripts/config --enable OF_LIBFDT
           scripts/config --enable OF_BOARD_SETUP
           scripts/config --enable CMD_FDT
-
-          # 3. 关键修复：为 TEXT_BASE 设置默认值（否则会触发交互）
           scripts/config --set-val TEXT_BASE 0x00200000
-          # 删除已废弃的 SYS_UBOOT_START 符号
           scripts/config --disable SYS_UBOOT_START 2>/dev/null || true
 
-          # 4. 删除所有空值行（防止其他未知空符号）
+          # 3. 删除空值行
           sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
 
-          # 5. 强制确保 CONFIG_ARM64=y
-          echo "CONFIG_ARM64=y" >> .config
-          sed -i '/^# CONFIG_ARM64 is not set/d' .config
-          sed -i '/^CONFIG_ARM64=n/d' .config
+          # 4. 第一次同步配置（可能会重置 ARM64）
+          make ARCH=arm64 olddefconfig
 
-          # 6. 非交互式同步配置（自动接受所有默认值）
-          yes "" | make ARCH=arm64 olddefconfig
+          # 5. 第二次强制开启 ARM64（关键修复）
+          scripts/config --enable ARM64
+          sed -i 's/# CONFIG_ARM64 is not set/CONFIG_ARM64=y/' .config
+          sed -i 's/CONFIG_ARM64=n/CONFIG_ARM64=y/' .config
+          grep -q "^CONFIG_ARM64=y" .config || echo "CONFIG_ARM64=y" >> .config
 
-          # 7. 再次同步，生成 auto.conf（必须）
+          # 6. 生成最终的 auto.conf（不会重置 ARM64）
           make ARCH=arm64 syncconfig
 
-          # 8. 验证 ARM64 已启用
-          grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用"; exit 1; }
+          # 7. 最终验证
+          grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用" ; exit 1; }
 
-          # 9. 编译
+          # 8. 设置环境变量并编译
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
