@@ -1,4 +1,4 @@
-name: 编译瑞芯微U-Boot
+name: 编译瑞芯微 U-Boot
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: false
         default: 'rk3568_hinlink_h68ktv_defconfig'
       use_custom_dtb:
-        description: '使用自定义DTB'
+        description: '使用自定义DTB与配置'
         required: true
         type: choice
         options:
@@ -28,76 +28,47 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 拉取仓库（直接放在当前目录）
+      - name: 拉取当前仓库
         uses: actions/checkout@v4
-        # 注意：没有 with: path，仓库内容就在 $GITHUB_WORKSPACE 下
 
-      - name: 安装依赖
+      - name: 安装编译依赖
         run: |
           sudo apt update
           sudo apt install -y git make gcc g++ libssl-dev device-tree-compiler \
-            python3 python3-dev python3-pip gcc-aarch64-linux-gnu bison flex bc cpio
+            python3 python3-dev python3-pip gcc-aarch64-linux-gnu bison flex bc cpio zip
 
       - name: 克隆 U-Boot
         run: |
           git clone --depth 1 --branch ${{ github.event.inputs.u_boot_ref }} \
             ${{ github.event.inputs.u_boot_repo }} u-boot
 
-      - name: 克隆 rkbin
+      - name: 克隆 rkbin 固件依赖
         run: |
           git clone --depth 1 https://github.com/rockchip-linux/rkbin.git
 
-      - name: 列出仓库内容（调试）
-        run: |
-          echo "=== 当前目录内容 ==="
-          ls -la
-          echo "=== diy-rockchip_uboot 目录内容（如果存在）==="
-          if [ -d "diy-rockchip_uboot" ]; then
-            ls -la diy-rockchip_uboot/
-            ls -la diy-rockchip_uboot/configs/ || echo "无 configs 子目录"
-            ls -la diy-rockchip_uboot/dtb/ || echo "无 dtb 子目录"
-          else
-            echo "警告：diy-rockchip_uboot 目录不存在，尝试查找相似目录"
-            find . -maxdepth 2 -type d -name "*rockchip*" 2>/dev/null || true
-          fi
-
-      - name: 部署自定义 DTB 和配置（动态匹配）
+      - name: 部署自定义 defconfig & DTB
         run: |
           set -e
-          if [ "${{ github.event.inputs.use_custom_dtb }}" == "是" ]; then
-            echo "=== 部署自定义文件 ==="
-            # 先找 configs 目录，不区分大小写
-            CONFIGS_DIR=$(find . -type d -path "*/diy-rockchip_uboot/configs" 2>/dev/null | head -1)
-            if [ -z "$CONFIGS_DIR" ]; then
-              # 尝试模糊匹配
-              CONFIGS_DIR=$(find . -type d -name "*rockchip*" -path "*/configs" 2>/dev/null | head -1)
-            fi
-            if [ -n "$CONFIGS_DIR" ]; then
-              CUSTOM_DEFCONFIG="$CONFIGS_DIR/${{ github.event.inputs.defconfig }}"
-              if [ -f "$CUSTOM_DEFCONFIG" ]; then
-                cp -v "$CUSTOM_DEFCONFIG" u-boot/configs/
-              else
-                echo "错误：找不到 defconfig 文件: $CUSTOM_DEFCONFIG"
-                exit 1
-              fi
+          if [ "${{ github.event.inputs.use_custom_dtb }}" = "是" ]; then
+            echo "=== 开始部署自定义文件 ==="
+
+            # 复制 defconfig
+            if [ -f "diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
+              cp -v "diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" u-boot/configs/
+            elif [ -f "diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
+              cp -v "diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" u-boot/configs/
             else
-              # 直接尝试常见路径
-              if [ -f "diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
-                cp -v diy-rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
-              elif [ -f "diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }}" ]; then
-                cp -v diy-Rockchip_uboot/configs/${{ github.event.inputs.defconfig }} u-boot/configs/
-              else
-                echo "错误：找不到 defconfig 文件，请检查路径"
-                exit 1
-              fi
+              echo "ERROR: 未找到自定义 defconfig"
+              exit 1
             fi
 
-            # 复制 dtb
-            DTB_DIR=$(find . -type d -path "*/diy-rockchip_uboot/dtb" 2>/dev/null | head -1)
-            if [ -n "$DTB_DIR" ] && ls $DTB_DIR/*.dtb 1>/dev/null 2>&1; then
-              cp -v $DTB_DIR/*.dtb u-boot/arch/arm/dts/
+            # 复制所有 dtb
+            if [ -d "diy-rockchip_uboot/dtb" ] && ls diy-rockchip_uboot/dtb/*.dtb >/dev/null 2>&1; then
+              cp -v diy-rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
+            elif [ -d "diy-Rockchip_uboot/dtb" ] && ls diy-Rockchip_uboot/dtb/*.dtb >/dev/null 2>&1; then
+              cp -v diy-Rockchip_uboot/dtb/*.dtb u-boot/arch/arm/dts/
             else
-              echo "警告：未找到 .dtb 文件"
+              echo "警告：未找到自定义 DTB 文件"
             fi
           fi
 
@@ -106,30 +77,29 @@ jobs:
           cd u-boot
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
-          export BL31=$(ls ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
+          export ROCKCHIP_TPL=$(realpath ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
+          export BL31=$(realpath ../rkbin/bin/rk35/rk3568_bl31_v*.elf | head -1)
 
           make ${{ github.event.inputs.defconfig }}
           make olddefconfig
 
-          if ! grep -q "CONFIG_ARM64=y" .config; then
-            echo "ERROR: ARM64 未启用"
-            exit 1
-          fi
+          grep -q "CONFIG_ARM64=y" .config || { echo "ARM64 未启用"; exit 1; }
 
           make -j$(nproc)
 
-      - name: 打包固件
+      - name: 整理固件
         run: |
           mkdir -p output
           cd u-boot
           for f in idbloader.img u-boot.itb uboot.img trust.img u-boot-rockchip.bin; do
             [ -f "$f" ] && cp -v "$f" ../output/
           done
-          cd ..
-          zip -j u-boot-h68ktv.zip output/*
 
-      - name: 上传构建产物
+      - name: 打包 ZIP
+        run: |
+          zip -j u-boot-h68ktv-${{ github.sha }}.zip output/*
+
+      - name: 上传 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: u-boot-h68ktv
@@ -142,7 +112,8 @@ jobs:
           tag_name: auto-build-${{ github.sha }}
           name: U-Boot H68KTV 自动构建 ${{ github.sha }}
           body: |
-            本地路径编译，U-Boot: ${{ github.event.inputs.u_boot_ref }}
-          files: u-boot-h68ktv.zip
+            U-Boot 版本：${{ github.event.inputs.u_boot_ref }}
+            defconfig：${{ github.event.inputs.defconfig }}
+          files: u-boot-h68ktv-${{ github.sha }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
