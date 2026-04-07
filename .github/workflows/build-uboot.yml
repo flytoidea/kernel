@@ -1,4 +1,4 @@
-name: 编译瑞芯微 U-Boot
+name: 编译瑞芯微 U-Boot (本地路径最终版)
 
 on:
   workflow_dispatch:
@@ -62,7 +62,7 @@ jobs:
             fi
           fi
 
-      - name: 编译 U-Boot（暴力强制 ARM64 版）
+      - name: 编译 U-Boot（全自动非交互版）
         run: |
           cd u-boot
           rm -f .config
@@ -70,29 +70,29 @@ jobs:
           # 1. 生成基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
 
-          # 2. 强制打开 ARM64（使用 scripts/config 工具，注意符号名不带 CONFIG_ 前缀）
+          # 2. 使用 scripts/config 开启必要选项
           scripts/config --enable ARM64
-
-          # 3. 打开其他必要选项
           scripts/config --enable OF_LIBFDT
           scripts/config --enable OF_BOARD_SETUP
           scripts/config --enable CMD_FDT
 
-          # 4. 清理配置文件中可能导致警告的空值行
-          sed -i '/^TEXT_BASE=/d' .config
-          sed -i '/^SYS_UBOOT_START=/d' .config
+          # 3. 删除所有值为空的配置行（防止警告和交互）
+          sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
 
-          # 5. 重新生成依赖（保留手动修改）
-          make ARCH=arm64 olddefconfig
+          # 4. 自动接受所有默认选项完成配置
+          yes "" | make ARCH=arm64 olddefconfig
 
-          # 6. 最终确认：如果 CONFIG_ARM64 仍未 y，则用 sed 强行写入
+          # 5. 再次强制确认 CONFIG_ARM64=y
           if ! grep -q "^CONFIG_ARM64=y" .config; then
             echo "CONFIG_ARM64=y" >> .config
           fi
-          # 再清理一次（防止旧配置再次引入空值）
+          # 禁用可能冲突的选项
           sed -i '/^# CONFIG_ARM64 is not set/d' .config
           sed -i '/^CONFIG_ARM64=n/d' .config
           grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用" ; exit 1; }
+
+          # 6. 再次运行 olddefconfig 同步依赖（非交互）
+          yes "" | make ARCH=arm64 olddefconfig
 
           # 7. 设置环境变量并编译
           export ARCH=arm64
