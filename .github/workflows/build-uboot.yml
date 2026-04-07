@@ -62,7 +62,7 @@ jobs:
             fi
           fi
 
-      - name: 编译 U-Boot（最终修复版）
+      - name: 编译 U-Boot（彻底解决交互问题）
         run: |
           cd u-boot
           rm -f .config
@@ -76,22 +76,29 @@ jobs:
           scripts/config --enable OF_BOARD_SETUP
           scripts/config --enable CMD_FDT
 
-          # 3. 删除所有空值行和错误符号行
-          sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
-          sed -i '/^TEXT_BASE=/d' .config
-          sed -i '/^SYS_UBOOT_START=/d' .config
+          # 3. 关键修复：为 TEXT_BASE 设置默认值（否则会触发交互）
+          scripts/config --set-val TEXT_BASE 0x00200000
+          # 删除已废弃的 SYS_UBOOT_START 符号
+          scripts/config --disable SYS_UBOOT_START 2>/dev/null || true
 
-          # 4. 强制 CONFIG_ARM64=y
-          if ! grep -q "^CONFIG_ARM64=y" .config; then
-            echo "CONFIG_ARM64=y" >> .config
-          fi
+          # 4. 删除所有空值行（防止其他未知空符号）
+          sed -i '/^[A-Z_][A-Z0-9_]*=\s*$/d' .config
+
+          # 5. 强制确保 CONFIG_ARM64=y
+          echo "CONFIG_ARM64=y" >> .config
           sed -i '/^# CONFIG_ARM64 is not set/d' .config
           sed -i '/^CONFIG_ARM64=n/d' .config
 
-          # 5. 同步配置（自动使用默认值，非交互）
-          make ARCH=arm64 olddefconfig
+          # 6. 非交互式同步配置（自动接受所有默认值）
+          yes "" | make ARCH=arm64 olddefconfig
 
-          # 6. 设置环境变量并编译
+          # 7. 再次同步，生成 auto.conf（必须）
+          make ARCH=arm64 syncconfig
+
+          # 8. 验证 ARM64 已启用
+          grep -q "^CONFIG_ARM64=y" .config || { echo "ERROR: ARM64 未启用"; exit 1; }
+
+          # 9. 编译
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ROCKCHIP_TPL=$(ls ../rkbin/bin/rk35/rk3568_ddr_*.bin | head -1)
